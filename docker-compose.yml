@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  book-organizer:
+    image: book-organizer:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: book-organizer
+    restart: unless-stopped
+    ports:
+      - "14808:14808"
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=14808
+    volumes:
+      # 待整理图书源目录 (宿主机路径 : 容器内路径)
+      # Windows 示例: - "G:/epub合集:/source"
+      # Linux / NAS 示例: - "/volume1/downloads/books:/source"
+      - ./source:/source
+
+      # 已整理标准书库目录 (宿主机路径 : 容器内路径)
+      # Windows 示例: - "G:/123（已整理）:/library"
+      # Linux / NAS 示例: - "/volume1/books/library:/library"
+      - ./library:/library
+
+      # 配置文件与缓存持久化目录
+      - ./config:/config
