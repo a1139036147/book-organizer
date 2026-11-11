@@ -14,6 +14,7 @@ Book Organizer - 智能图书整理工具
 """
 import os
 import sys
+import threading
 
 # 修复打包环境下 ssl 缺少 codex-rejected-cas.pem 导致的 [Errno 2] 崩溃
 try:
@@ -108,7 +109,7 @@ class OrganizerReporter:
 class BookOrganizer:
     def __init__(self, src_dir, dst_dir, action='copy', google_api_key=None, delay=config.REQUEST_DELAY,
                  skip_collections=True, dry_run=False, log_callback=None, progress_callback=None,
-                 stats_callback=None, stop_event=None, reporter=None, request_delay=None):
+                 stats_callback=None, stop_event=None, reporter=None, request_delay=None, threads=4):
         if request_delay is not None:
             delay = request_delay
         if reporter is not None:
@@ -125,6 +126,10 @@ class BookOrganizer:
         self.stats_callback = stats_callback
         self.stop_event = stop_event
         self.provider = metadata_provider.UnifiedMetadataProvider(google_api_key=google_api_key, delay=delay)
+
+        self.threads = max(2, min(20, int(threads or 4)))
+        self.lock = threading.Lock()
+        self.processed_counter = 0
 
         self.stats = {
             'total_scanned': 0,
@@ -145,7 +150,7 @@ class BookOrganizer:
     def notify_stats(self):
         if self.stats_callback:
             try:
-                self.stats_callback(dict(self.stats))
+                with self.lock: st = {'total_scanned': self.stats['total_scanned'], 'organized': list(self.stats['organized']), 'skipped_collections': list(self.stats['skipped_collections']), 'skipped_no_isbn': list(self.stats['skipped_no_isbn']), 'errors': list(self.stats['errors'])}; self.stats_callback(st)
             except Exception:
                 pass
 
@@ -199,30 +204,40 @@ class BookOrganizer:
             self.log(f"已设置处理数量限制: 前 {limit} 本图书。", 'info')
 
         total_files = len(book_files)
-        for idx, filename in enumerate(book_files, 1):
-            if self.stop_event and self.stop_event.is_set():
-                self.log("[提示] 操作已被用户手动中止！", 'warning')
-                break
+        self.processed_counter = 0
+        self.log(f"并发模式:       启动 {self.threads} 个工作线程并发处理 (范围2-20)", "info")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        def worker_task(item):
+            file_path, filename, ext = item
+            if self.stop_event and self.stop_event.is_set(): return
+            with self.lock:
+                self.processed_counter += 1
+                curr_idx = self.processed_counter
+
+            self.log(f"[{curr_idx:03d}/{total_files:03d}] 正在分析: {filename}", "heading")
             if self.progress_callback:
-                try:
-                    self.progress_callback(idx, total_files, filename)
-                except Exception:
-                    pass
-
-            file_path = os.path.join(self.src_dir, filename)
-            ext = os.path.splitext(filename)[1].lower()
-            self.log(f"[{idx:03d}/{total_files:03d}] 正在分析: {filename}", 'heading')
+                try: self.progress_callback(curr_idx, total_files, filename)
+                except Exception: pass
 
             try:
                 self.process_single_book(file_path, filename, ext)
             except Exception as e:
                 err_msg = f"处理异常: {str(e)}"
-                self.log(f"  [错误] {err_msg}", 'error')
-                self.stats['errors'].append((filename, err_msg))
+                self.log(f"  [错误] {err_msg}", "error")
+                with self.lock: self.stats["errors"].append((filename, err_msg))
                 self.notify_stats()
 
-            self.log("", 'info')
+            self.log("", "info")
+
+        task_items = [(os.path.join(self.src_dir, fn), fn, os.path.splitext(fn)[1].lower()) for fn in book_files]
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            futures = [executor.submit(worker_task, item) for item in task_items]
+            for f in as_completed(futures):
+                if self.stop_event and self.stop_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    self.log("[提示] 任务已被用户手动终止，正在退出工作线程...", "warning")
+                    break
 
         self.print_summary()
         return self.stats
@@ -288,7 +303,7 @@ class BookOrganizer:
                 # 书内各个 ISBN 经联网验证均与当前书名无关，且网上无合集出版条目
                 col_reason = f"书内包含 {len(internal_isbns)} 个ISBN，经网络验证均不对应当前书名，属于无独立ISBN的拼凑合集"
                 self.log(f"  * [跳过不整理] 判定为多书拼凑合集，本身无出版ISBN号 ({col_reason})。", 'skip')
-                self.stats['skipped_collections'].append((filename, col_reason))
+                with self.lock: self.stats['skipped_collections'].append((filename, col_reason))
                 self.notify_stats()
                 return
 
@@ -335,14 +350,14 @@ class BookOrganizer:
         # 如果被判定为合集特征，但最终无法获得合法出版ISBN -> 跳过！
         if is_col_name and not has_isbn:
             self.log(f"  * [跳过不整理] 疑似多本书合集/全本 ({col_kw_reason})，且未查询到出版ISBN号。", 'skip')
-            self.stats['skipped_collections'].append((filename, col_kw_reason))
+            with self.lock: self.stats['skipped_collections'].append((filename, col_kw_reason))
             self.notify_stats()
             return
 
         # 如果单本书也完全未能查询到有效出版ISBN号 -> 跳过！
         if not has_isbn:
             self.log("  * [跳过不整理] 未能从书内或网络获取到有效出版ISBN号，跳过整理。", 'skip')
-            self.stats['skipped_no_isbn'].append((filename, "未找到有效ISBN号"))
+            with self.lock: self.stats['skipped_no_isbn'].append((filename, "未找到有效ISBN号"))
             self.notify_stats()
             return
 
@@ -373,7 +388,7 @@ class BookOrganizer:
             self.log(f"  [成功匹配] (ISBN: {clean_isbn}, 来源: {meta.get('source')})", 'success')
             self.log(f"    拟生成目录: {folder_name}", 'info')
             self.log(f"    拟存放文件: {target_book_filename}, metadata.json, {safe_title}-{safe_author}.opf, cover.jpg", 'info')
-            self.stats['organized'].append((filename, folder_name, clean_isbn))
+            with self.lock: self.stats['organized'].append((filename, folder_name, clean_isbn))
             self.notify_stats()
             return
 
@@ -428,7 +443,7 @@ class BookOrganizer:
         opf_generator.generate_calibre_opf(meta, target_opf_path, book_filename=target_book_filename)
 
         self.log(f"  [整理完成] 已成功规范化入库: {folder_name}", 'success')
-        self.stats['organized'].append((filename, folder_name, clean_isbn))
+        with self.lock: self.stats['organized'].append((filename, folder_name, clean_isbn))
         self.notify_stats()
 
     def print_summary(self):
@@ -486,3 +501,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+

@@ -1206,6 +1206,10 @@ class BookOrganizerGUI:
         self.delay_var = tk.StringVar(value=str(self.saved_settings.get("delay", config.REQUEST_DELAY)))
         tk.Entry(r2, textvariable=self.delay_var, width=6, font=self.font_normal, bg=THEME['bg_input'], fg=THEME['text_primary'], insertbackground=THEME['accent_cyan']).pack(side=tk.LEFT, padx=(0, 14))
 
+        tk.Label(r2, text="并发线程(2-20):", font=self.font_normal, fg=THEME['text_primary'], bg=THEME['bg_panel']).pack(side=tk.LEFT, padx=(0, 4))
+        self.threads_var = tk.StringVar(value=str(self.saved_settings.get("threads", "4")))
+        tk.Spinbox(r2, from_=2, to=20, textvariable=self.threads_var, width=5, font=self.font_normal, bg=THEME['bg_input'], fg=THEME['text_primary'], buttonbackground="#232a3b").pack(side=tk.LEFT, padx=(0, 14))
+
         tk.Label(r2, text="Google Books Key:", font=self.font_normal, fg=THEME['text_primary'], bg=THEME['bg_panel']).pack(side=tk.LEFT, padx=(0, 4))
         self.key_var = tk.StringVar(value=str(self.saved_settings.get("google_key", "")))
         tk.Entry(r2, textvariable=self.key_var, width=24, font=self.font_normal, bg=THEME['bg_input'], fg=THEME['text_primary'], insertbackground=THEME['accent_cyan']).pack(side=tk.LEFT, padx=(0, 6))
@@ -1485,12 +1489,12 @@ class BookOrganizerGUI:
 
         self.worker = threading.Thread(
             target=self.worker_thread,
-            args=(src, dst, self.action_var.get(), self.skip_col_var.get(), limit_val, delay_val, key_val, dry_run),
+            args=(src, dst, self.action_var.get(), self.skip_col_var.get(), limit_val, delay_val, key_val, dry_run, int(getattr(self, "threads_var", None) and self.threads_var.get().strip() or 4)),
             daemon=True
         )
         self.worker.start()
 
-    def worker_thread(self, src, dst, action, skip_col, limit, delay, key, dry_run):
+    def worker_thread(self, src, dst, action, skip_col, limit, delay, key, dry_run, threads=4):
         try:
             reporter = book_organizer.OrganizerReporter(self.msg_queue)
             organizer = book_organizer.BookOrganizer(
@@ -1501,6 +1505,7 @@ class BookOrganizerGUI:
                 request_delay=delay,
                 google_api_key=key,
                 dry_run=dry_run,
+                threads=threads,
                 reporter=reporter,
                 stop_event=self.stop_event
             )
@@ -1541,3 +1546,4 @@ def launch_gui():
 
 if __name__ == '__main__':
     launch_gui()
+

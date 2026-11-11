@@ -52,7 +52,8 @@ def load_settings():
         "skip_collections": True,
         "limit": "",
         "delay": "1.2",
-        "google_key": ""
+        "google_key": "",
+        "threads": 4
     }
 
 def save_settings(data):
@@ -96,7 +97,7 @@ class TaskManager:
 
 task_manager = TaskManager()
 
-def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run):
+def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run, threads=4):
     task_manager.is_running = True
     task_manager.finished = False
     task_manager.status_text = "正在执行整理任务..."
@@ -134,6 +135,7 @@ def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run):
             request_delay=delay,
             google_api_key=key,
             dry_run=dry_run,
+            threads=threads,
             reporter=reporter,
             stop_event=task_manager.stop_event
         )
@@ -293,6 +295,7 @@ def api_organize_start():
     limit_val = int(data.get('limit')) if data.get('limit') else None
     delay_val = float(data.get('delay', 1.2))
     key_val = data.get('google_key', '').strip() or None
+    threads_val = max(2, min(20, int(data.get('threads', 4))))
 
     if not src or not os.path.exists(src):
         return jsonify({"success": False, "message": f"待整理源目录不存在: {src}"})
@@ -316,7 +319,7 @@ def api_organize_start():
 
     task_manager.worker = threading.Thread(
         target=background_worker,
-        args=(src, dst, action, skip_col, limit_val, delay_val, key_val, dry_run),
+        args=(src, dst, action, skip_col, limit_val, delay_val, key_val, dry_run, threads_val),
         daemon=True
     )
     task_manager.worker.start()
@@ -760,6 +763,8 @@ header {
         <input type="number" id="orgLimit" class="form-input" placeholder="不限" style="max-width: 90px;">
         <span style="font-size:0.85rem; color:var(--text-secondary); margin-left:14px;">Google Key:</span>
         <input type="text" id="orgGoogleKey" class="form-input" placeholder="选填 (国内当当/豆瓣免Key全覆盖)">
+        <span style="font-size:0.85rem; color:var(--text-secondary); margin-left:14px;">并发线程(2-20):</span>
+        <input type="number" id="orgThreads" class="form-input" value="4" min="2" max="20" style="max-width: 70px;">
       </div>
     </div>
 
@@ -1064,6 +1069,7 @@ async function startOrganize(dryRun) {
     delay: document.getElementById('orgDelay').value,
     limit: document.getElementById('orgLimit').value,
     google_key: document.getElementById('orgGoogleKey').value.trim(),
+    threads: document.getElementById('orgThreads').value,
     dry_run: dryRun
   };
   const res = await fetch('/api/organize/start', {
@@ -1145,6 +1151,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (settings.dst) document.getElementById('orgDst').value = settings.dst;
     if (settings.delay) document.getElementById('orgDelay').value = settings.delay;
     if (settings.google_key) document.getElementById('orgGoogleKey').value = settings.google_key;
+    if (settings.threads) document.getElementById('orgThreads').value = settings.threads;
     if (settings.limit) document.getElementById('orgLimit').value = settings.limit;
   } catch (e) {}
   loadBooks();

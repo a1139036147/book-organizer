@@ -7,6 +7,7 @@ Dual-track architecture:
 """
 import urllib.request
 import urllib.parse
+import threading
 
 # 修复打包环境下 ssl 缺少 codex-rejected-cas.pem 导致的 [Errno 2] 崩溃
 try:
@@ -210,6 +211,7 @@ class DoubanProvider:
     def __init__(self, delay=config.REQUEST_DELAY):
         self.delay = delay
         self.last_request_time = 0
+        self.rate_lock = threading.Lock()
         self.cookie_jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookie_jar))
         self.bid = ''.join(random.choices(string.ascii_letters + string.digits, k=11))
@@ -231,10 +233,11 @@ class DoubanProvider:
         return headers
 
     def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self.last_request_time = time.time()
+        with self.rate_lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.delay:
+                time.sleep(self.delay - elapsed)
+            self.last_request_time = time.time()
 
     def search(self, keyword):
         if not keyword:
@@ -366,12 +369,15 @@ class WeReadProvider:
     def __init__(self, delay=config.REQUEST_DELAY):
         self.delay = delay
         self.last_request_time = 0
+        self.rate_lock = threading.Lock()
+        self.opener = urllib.request.build_opener()
 
     def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self.last_request_time = time.time()
+        with self.rate_lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.delay:
+                time.sleep(self.delay - elapsed)
+            self.last_request_time = time.time()
 
     def search(self, query):
         if not query:
@@ -427,12 +433,15 @@ class OpenLibraryProvider:
     def __init__(self, delay=config.REQUEST_DELAY):
         self.delay = delay
         self.last_request_time = 0
+        self.rate_lock = threading.Lock()
+        self.opener = urllib.request.build_opener()
 
     def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self.last_request_time = time.time()
+        with self.rate_lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.delay:
+                time.sleep(self.delay - elapsed)
+            self.last_request_time = time.time()
 
     def fetch_by_isbn(self, isbn):
         if not isbn:
@@ -521,12 +530,15 @@ class BangumiProvider:
     def __init__(self, delay=config.REQUEST_DELAY):
         self.delay = delay
         self.last_request_time = 0
+        self.rate_lock = threading.Lock()
+        self.opener = urllib.request.build_opener()
 
     def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self.last_request_time = time.time()
+        with self.rate_lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.delay:
+                time.sleep(self.delay - elapsed)
+            self.last_request_time = time.time()
 
     def search(self, title):
         if not title:
@@ -567,12 +579,15 @@ class GoogleBooksProvider:
         self.api_key = api_key
         self.delay = delay
         self.last_request_time = 0
+        self.rate_lock = threading.Lock()
+        self.opener = urllib.request.build_opener()
 
     def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self.last_request_time = time.time()
+        with self.rate_lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.delay:
+                time.sleep(self.delay - elapsed)
+            self.last_request_time = time.time()
 
     def search(self, query):
         if not query:
@@ -638,16 +653,18 @@ class DangDangProvider:
     def __init__(self, delay=config.REQUEST_DELAY):
         self.delay = delay
         self.last_request_time = 0
+        self.rate_lock = threading.Lock()
         self.headers = {
             'User-Agent': config.HTTP_HEADERS.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         }
 
     def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self.last_request_time = time.time()
+        with self.rate_lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.delay:
+                time.sleep(self.delay - elapsed)
+            self.last_request_time = time.time()
 
     def fetch_by_isbn(self, isbn):
         return self.fetch_by_query(isbn)
@@ -797,6 +814,7 @@ class UnifiedMetadataProvider:
             self.calibre_adapters = []
 
         self.cache = {}
+        self.cache_lock = threading.Lock()
 
     def get_loaded_sources_summary(self):
         """返回当前启用的数据源列表摘要"""
