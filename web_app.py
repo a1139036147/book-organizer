@@ -1445,7 +1445,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 @app.route('/read/<int:book_idx>')
 def read_book_page(book_idx):
     return render_template_string(STANDALONE_READER_HTML, book_id=book_idx)
-    )
 
 @app.route('/')
 def index():
