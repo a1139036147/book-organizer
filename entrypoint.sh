@@ -36,11 +36,24 @@ if [ ! -s "$PGDATA/PG_VERSION" ]; then
     echo "📦 [PostgreSQL] 首次启动，正在 /config/pgdata 中初始化数据库集群..."
     su - postgres -c "$PG_BIN/initdb -D '$PGDATA' --encoding=UTF8 --locale=C.UTF-8"
 fi
+# 清理容器异常退出时残留的 PID 锁文件（解决 another server might be running）
+rm -f "$PGDATA/postmaster.pid" 2>/dev/null || true
+
+PG_BIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -n 1)
+
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    echo "📦 [PostgreSQL] 首次启动，正在 /config/pgdata 中初始化数据库集群..."
+    su - postgres -c "$PG_BIN/initdb -D '$PGDATA' --encoding=UTF8 --locale=C.UTF-8"
+fi
 
 echo "🚀 [PostgreSQL] 启动内置数据库服务..."
 su - postgres -c "$PG_BIN/pg_ctl -D '$PGDATA' -l /config/postgres.log -w start"
 
-su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname = 'book_library'\" | grep -q 1 || psql -c \"CREATE USER bookuser WITH PASSWORD 'bookpass123'; CREATE DATABASE book_library OWNER bookuser;\""
+# 1. 独立创建用户 (静默容错)
+su - postgres -c "psql -c \"CREATE USER bookuser WITH PASSWORD 'bookpass123';\" 2>/dev/null || true"
+
+# 2. 官方独立建库命令 (彻底解决 cannot run inside a transaction block 报错)
+su - postgres -c "createdb -O bookuser book_library 2>/dev/null || true"
 
 cleanup() {
     echo "🛑 [PostgreSQL] 优雅关闭内置数据库..."
