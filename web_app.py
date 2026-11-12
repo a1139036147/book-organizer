@@ -1,3 +1,4 @@
+from plugins_manager import plugin_manager
 
 STANDALONE_READER_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
