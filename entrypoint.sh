@@ -61,11 +61,18 @@ trap cleanup SIGTERM SIGINT
 # -------------------------------------------------------------
 if [ "$1" = "web" ] || [ -z "$1" ]; then
     echo "=========================================================="
-    echo "  📚 智能图书整理系统 All-in-One [版本: 2.5.0]"
+    echo "  📚 智能图书整理系统 All-in-One [版本: ${APP_VERSION:-2.5.0}]"
     echo "  Web 地址:    http://0.0.0.0:${PORT:-14808}"
     echo "  数据持久化:  /config/pgdata"
+    echo "  热更新守护:  已开启在线热升级与平滑重载"
     echo "=========================================================="
-    exec python /app/web_app.py
+    
+    # 守护循环：当用户在网页点击热更新后，后台重启不会导致容器退出，直接毫秒级重拉最新代码
+    while true; do
+        python /app/web_app.py || true
+        echo "🔄 [热重载守护] Web 进程已平滑重启，正在拉起最新版本..."
+        sleep 1
+    done
 elif [ "$1" = "organize" ]; then
     shift
     exec python /app/book_organizer.py --src /source --dst /library "$@"

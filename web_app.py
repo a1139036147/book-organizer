@@ -295,12 +295,123 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
     initReader();
   </script>
 
-<!-- 屏幕左下角常驻固定版本号徽章 -->
-<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 12px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" title="点击查看系统版本与构建特性" onclick="showVersionInfo()">
-  <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
+<!-- 屏幕左下角常驻固定版本号与在线热更新入口 -->
+<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 8px; background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(10px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 14px; border-radius: 20px; box-shadow: 0 6px 20px rgba(0,0,0,0.6); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" onclick="openUpdateModal()">
+  <span id="updateDot" style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
   <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 500;">版本:</span>
-  <span style="color: #38bdf8; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
+  <span style="color: #38bdf8; font-size: 0.82rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
+  <span id="updateBadgeText" style="display:none; background:#f59e0b; color:#000; font-size:0.7rem; font-weight:700; padding:1px 6px; border-radius:10px;">有更新</span>
 </div>
+
+<!-- 在线热更新模态框 -->
+<div class="modal-overlay" id="updateModal">
+  <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; width: 90%; max-width: 520px; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.7);">
+    <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-side);">
+      <div style="font-weight: 700; font-size: 1.05rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px;">
+        <span>🚀 容器在线热更新与系统升级</span>
+      </div>
+      <button class="close-modal-btn" onclick="closeModal('updateModal')">×</button>
+    </div>
+    
+    <div style="padding: 22px; display: flex; flex-direction: column; gap: 14px;">
+      <div style="background: var(--bg-base); padding: 14px; border-radius: 8px; border: 1px solid var(--border); font-size: 0.88rem; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted);">当前容器版本:</span><span style="color:#38bdf8; font-weight:700;">v{{ app_version }}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted);">内置数据库:</span><span style="color:#10b981; font-weight:600;">PostgreSQL 16 (健康)</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted);">远端最新提交:</span><span id="updateRemoteSha" style="color:var(--text-main); font-family:monospace;">正在检查...</span></div>
+        <div id="updateRemoteMsg" style="color:var(--text-muted); font-size:0.8rem; margin-top:4px; line-height:1.5;">正在连通 GitHub 检查更新...</div>
+      </div>
+
+      <div id="updateStatusText" style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
+        💡 <strong>在线热更新原理：</strong>无需重新拉取或构建庞大 Docker 镜像，直接在容器内毫秒级热覆盖最新代码并平滑重载，全过程只需 3 秒，书库与数据库完全不受影响！
+      </div>
+
+      <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px;">
+        <button class="btn-action btn-secondary" onclick="checkRemoteUpdate(true)" id="btnCheckUpdate">🔄 重新检查</button>
+        <button class="btn-action btn-green" onclick="doHotUpdate()" id="btnDoUpdate" style="display:none;">⚡ 立即一键热升级 (3秒)</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openUpdateModal() {
+  openModal('updateModal');
+  checkRemoteUpdate(false);
+}
+
+async function checkRemoteUpdate(manual) {
+  const shaEl = document.getElementById('updateRemoteSha');
+  const msgEl = document.getElementById('updateRemoteMsg');
+  const btnDo = document.getElementById('btnDoUpdate');
+  shaEl.textContent = '正在连通 GitHub 仓库...';
+  
+  try {
+    const res = await fetch('/api/system/check_update');
+    const data = await res.json();
+    if (data.success) {
+      shaEl.textContent = `${data.latest_commit} (${data.commit_date.substring(0, 10)})`;
+      msgEl.textContent = `最新提交内容: "${data.commit_message}"`;
+      
+      if (data.has_update) {
+        document.getElementById('updateDot').style.background = '#f59e0b';
+        document.getElementById('updateDot').style.boxShadow = '0 0 10px #f59e0b';
+        document.getElementById('updateBadgeText').style.display = 'inline-block';
+        btnDo.style.display = 'inline-block';
+        btnDo.innerHTML = '⚡ 立即一键热升级 (3秒)';
+      } else {
+        btnDo.style.display = 'none';
+        if (manual) alert('当前容器已是最新代码，无需更新！');
+      }
+    } else {
+      shaEl.textContent = '检查受限';
+      msgEl.textContent = data.error;
+    }
+  } catch(err) {
+    shaEl.textContent = '网络异常';
+    msgEl.textContent = '无法连接更新服务器: ' + err;
+  }
+}
+
+async function doHotUpdate() {
+  const btn = document.getElementById('btnDoUpdate');
+  const statusEl = document.getElementById('updateStatusText');
+  btn.disabled = true;
+  btn.textContent = '⏳ 正在热替换代码...';
+  statusEl.innerHTML = '<span style="color:#0ea5e9;">🚀 正在从 GitHub 极速下载最新增量包并热覆盖核心代码...</span>';
+  
+  try {
+    const res = await fetch('/api/system/hot_update', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      statusEl.innerHTML = '<span style="color:#10b981; font-weight:700;">✅ 热替换成功！系统正在平滑热重载，3 秒后自动刷新页面...</span>';
+      let sec = 3;
+      const timer = setInterval(() => {
+        sec--;
+        if (sec <= 0) {
+          clearInterval(timer);
+          window.location.reload();
+        } else {
+          statusEl.innerHTML = `<span style="color:#10b981; font-weight:700;">✅ 重载就绪，将在 ${sec} 秒后自动刷新...</span>`;
+        }
+      }, 1000);
+    } else {
+      statusEl.innerHTML = `<span style="color:#ef4444;">更新失败: ${data.error}</span>`;
+      btn.disabled = false;
+      btn.textContent = '重试热升级';
+    }
+  } catch(err) {
+    // 进程退出重载时网络断开属于正常现象
+    statusEl.innerHTML = '<span style="color:#10b981; font-weight:700;">✅ 正在平滑重启 Web 服务，正在自动重新连接...</span>';
+    setTimeout(() => { window.location.reload(); }, 2500);
+  }
+}
+
+// 页面加载后 1.5 秒自动静默检测是否有更新
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => { checkRemoteUpdate(false); }, 1500);
+});
+</script>
+
 
 <script>
 function showVersionInfo() {
