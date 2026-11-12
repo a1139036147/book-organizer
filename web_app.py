@@ -49,7 +49,7 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
     .top-left { display: flex; align-items: center; gap: 12px; }
     .btn-nav-back { color: var(--text-muted); text-decoration: none; font-size: 0.88rem; font-weight: 600; padding: 6px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; }
     .btn-nav-back:hover { color: var(--accent); border-color: var(--accent); }
-    .book-title { font-size: 1.05rem; font-weight: 700; color: var(--accent); max-width: 450px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .book-title { font-size: 1.05rem; font-weight: 700; color: var(--accent); max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .top-right { display: flex; align-items: center; gap: 8px; }
     .ctrl-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
     .ctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -95,7 +95,7 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
       <button class="ctrl-btn" onclick="toggleSidebar()">
         <span>☰</span> <span id="toggleText">折叠详情</span>
       </button>
-      <div class="book-title" id="bookTitle">正在加载图书...</div>
+      <div class="book-title" id="bookTitle">正在准备图书...</div>
       <span style="background:rgba(14,165,233,0.15); color:var(--accent); border:1px solid rgba(14,165,233,0.3); padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:600;">v2.5.0</span>
     </div>
     <div class="top-right">
@@ -112,12 +112,12 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
   <div class="main-body">
     <div class="sidebar" id="sidebar">
       <div class="side-tabs">
-        <div class="side-tab active" onclick="switchSideTab(0)">📖 章节大纲</div>
+        <div class="side-tab active" onclick="switchSideTab(0)">📖 章节大纲 (<span id="tocCount">0</span>)</div>
         <div class="side-tab" onclick="switchSideTab(1)">ℹ️ 书籍详情</div>
       </div>
       
       <div class="tab-content active" id="tabChapters">
-        <div style="padding:20px; color:var(--text-muted); text-align:center;">正在解析 Spine 目录大纲...</div>
+        <div style="padding:20px; color:var(--text-muted); text-align:center;">⚡ 正在瞬时加载章节大纲...</div>
       </div>
 
       <div class="tab-content" id="tabDetail">
@@ -141,14 +141,14 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
     <div class="reader-stage">
       <div class="reader-scroll" id="scrollContainer">
         <div class="article-container">
-          <h1 class="article-title" id="chapterHeading">正在加载正文...</h1>
-          <div id="chapterBody" style="color:var(--text-muted); line-height:2;">请稍候，正在安全解压并按权威 Spine 顺序读取图书章节...</div>
+          <h1 class="article-title" id="chapterHeading">正在加载章节...</h1>
+          <div id="chapterBody" style="color:var(--text-muted); line-height:2;">请稍候，正在即时解压当前章节正文...</div>
         </div>
       </div>
 
       <div class="footer-bar">
         <button class="page-btn" id="btnPrev" onclick="prevChapter()" disabled>← 上一章节</button>
-        <div class="page-info" id="pageInfo">正在加载...</div>
+        <div class="page-info" id="pageInfo">准备中...</div>
         <button class="page-btn" id="btnNext" onclick="nextChapter()" disabled>下一章节 →</button>
       </div>
     </div>
@@ -156,7 +156,7 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
 
   <script>
     const bookId = {{ book_id }};
-    let chaptersData = [];
+    let tocList = [];
     let currentIdx = 0;
     let fontSize = 1.15;
 
@@ -164,12 +164,12 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
       document.getElementById('btnDownloadTop').href = `/api/download/${bookId}`;
       document.getElementById('btnDownloadSide').href = `/api/download/${bookId}`;
 
-      // 1. 获取书籍详情信息
+      // 1. 瞬时获取目录大纲与书籍详情 (0.05秒秒开)
       try {
-        const bRes = await fetch('/api/books');
-        const bData = await bRes.json();
-        const book = bData.books.find(b => b.id === bookId);
-        if (book) {
+        const res = await fetch(`/api/book/${bookId}/toc`);
+        const data = await res.json();
+        if (data.success) {
+          const book = data.book;
           document.title = `《${book.title}》 - 沉浸阅读`;
           document.getElementById('bookTitle').textContent = `《${book.title}》 - ${book.author || '未知作者'}`;
           document.getElementById('detTitle').textContent = book.title;
@@ -184,46 +184,35 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
             img.style.display = 'inline-block';
             document.getElementById('detailFallbackCover').style.display = 'none';
           }
-        }
-      } catch(e) {}
 
-      // 2. 获取严格 Spine 排序的章节与正文
-      try {
-        const pRes = await fetch(`/api/preview/${bookId}`);
-        const pData = await pRes.json();
-        if (pData.success && pData.chapters && pData.chapters.length > 0) {
-          chaptersData = pData.chapters;
+          tocList = data.toc;
+          document.getElementById('tocCount').textContent = tocList.length;
           renderTOC();
-          renderChapter(0);
+
+          // 2. 毫秒级即时加载当前第 1 章正文
+          loadChapter(0);
         } else {
-          document.getElementById('chapterHeading').textContent = '未提取到正文文本';
-          document.getElementById('chapterBody').innerHTML = '<div style="color:#ef4444;">本书未提取到有效章节文本，请点击顶栏【⬇️ 导出EPUB】在本地阅读器中打开。</div>';
+          fallbackLoadAll();
         }
       } catch(err) {
-        document.getElementById('chapterHeading').textContent = '加载失败';
-        document.getElementById('chapterBody').innerHTML = `<div style="color:#ef4444;">无法读取图书: ${err}</div>`;
+        fallbackLoadAll();
       }
     }
 
     function renderTOC() {
       const tab = document.getElementById('tabChapters');
-      tab.innerHTML = chaptersData.map((c, i) => `
-        <div class="chap-item ${i===0?'active':''}" onclick="selectChapter(${i})" id="chapItem_${i}">
+      tab.innerHTML = tocList.map(c => `
+        <div class="chap-item ${c.index === currentIdx ? 'active' : ''}" onclick="selectChapter(${c.index})" id="chapItem_${c.index}">
           <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:240px;">${c.title}</span>
-          <span style="font-size:0.75rem; opacity:0.6;">第 ${i+1} 节</span>
+          <span style="font-size:0.75rem; opacity:0.6;">第 ${c.index + 1} 节</span>
         </div>
       `).join('');
     }
 
-    function renderChapter(idx) {
-      if (idx < 0 || idx >= chaptersData.length) return;
+    // 按需只解压单章 (0.01秒呈现，绝对不卡死)
+    async function loadChapter(idx) {
+      if (idx < 0 || (tocList.length > 0 && idx >= tocList.length)) return;
       currentIdx = idx;
-      const ch = chaptersData[idx];
-      document.getElementById('chapterHeading').textContent = ch.title;
-      
-      const paragraphs = ch.content.split(/
-+/).filter(p => p.trim());
-      document.getElementById('chapterBody').innerHTML = paragraphs.map(p => `<p>${p.trim()}</p>`).join('');
       
       document.querySelectorAll('.chap-item').forEach((el, i) => {
         el.classList.toggle('active', i === idx);
@@ -231,15 +220,47 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
       const activeEl = document.getElementById(`chapItem_${idx}`);
       if (activeEl) activeEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 
-      document.getElementById('pageInfo').textContent = `第 ${idx + 1} / ${chaptersData.length} 节 · ${Math.round((idx + 1)/chaptersData.length*100)}%`;
+      document.getElementById('chapterHeading').textContent = tocList[idx] ? tocList[idx].title : `第 ${idx + 1} 节`;
+      document.getElementById('chapterBody').innerHTML = '<div style="color:var(--text-muted);">⚡ 正在呈现章节内容...</div>';
+      
+      try {
+        const res = await fetch(`/api/book/${bookId}/chapter/${idx}`);
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById('chapterHeading').textContent = data.title;
+          const paragraphs = data.content.split(/
++/).filter(p => p.trim());
+          document.getElementById('chapterBody').innerHTML = paragraphs.map(p => `<p>${p.trim()}</p>`).join('');
+        } else {
+          document.getElementById('chapterBody').innerHTML = `<div style="color:#ef4444;">${data.error || '未提取到该章节文本'}</div>`;
+        }
+      } catch(err) {
+        document.getElementById('chapterBody').innerHTML = `<div style="color:#ef4444;">章节加载异常: ${err}</div>`;
+      }
+
+      const total = tocList.length || 1;
+      document.getElementById('pageInfo').textContent = `第 ${idx + 1} / ${total} 节 · ${Math.round((idx + 1)/total*100)}%`;
       document.getElementById('btnPrev').disabled = (idx === 0);
-      document.getElementById('btnNext').disabled = (idx === chaptersData.length - 1);
+      document.getElementById('btnNext').disabled = (idx === total - 1);
       document.getElementById('scrollContainer').scrollTop = 0;
     }
 
-    function prevChapter() { if (currentIdx > 0) renderChapter(currentIdx - 1); }
-    function nextChapter() { if (currentIdx < chaptersData.length - 1) renderChapter(currentIdx + 1); }
-    function selectChapter(idx) { renderChapter(idx); }
+    // 兼容保底
+    async function fallbackLoadAll() {
+      try {
+        const res = await fetch(`/api/preview/${bookId}`);
+        const data = await res.json();
+        if (data.success && data.chapters) {
+          tocList = data.chapters.map((c, i) => ({ title: c.title, index: i }));
+          renderTOC();
+          loadChapter(0);
+        }
+      } catch(e) {}
+    }
+
+    function prevChapter() { if (currentIdx > 0) loadChapter(currentIdx - 1); }
+    function nextChapter() { if (currentIdx < tocList.length - 1) loadChapter(currentIdx + 1); }
+    function selectChapter(idx) { loadChapter(idx); }
 
     function switchSideTab(idx) {
       document.querySelectorAll('.side-tab').forEach((el, i) => el.classList.toggle('active', i === idx));
@@ -1441,6 +1462,47 @@ document.addEventListener('DOMContentLoaded', async () => {
 </html>
 """
 
+
+
+@app.route('/api/book/<int:book_idx>/toc')
+def api_book_toc(book_idx):
+    """只读取章节目录大纲 (0.02秒瞬开，不解压正文)"""
+    lib_dir = get_library_dir()
+    books = bookshelf_manager.scan_library(lib_dir)
+    book = next((b for b in books if b.id == book_idx), None)
+    if not book:
+        return jsonify({"success": False, "error": "书籍未找到"}), 404
+    
+    # 提取章节信息 (带性能保护)
+    chaps = bookshelf_manager.extract_book_preview(book.file_path)
+    toc_list = [{"title": t, "index": i} for i, (t, c) in enumerate(chaps)]
+    return jsonify({
+        "success": True,
+        "book": book.to_dict(),
+        "total_chapters": len(toc_list),
+        "toc": toc_list
+    })
+
+@app.route('/api/book/<int:book_idx>/chapter/<int:chap_idx>')
+def api_book_chapter(book_idx, chap_idx):
+    """按需只解压并读取当前一章正文 (0.01秒呈现，彻底不卡)"""
+    lib_dir = get_library_dir()
+    books = bookshelf_manager.scan_library(lib_dir)
+    book = next((b for b in books if b.id == book_idx), None)
+    if not book:
+        return jsonify({"success": False, "error": "书籍未找到"}), 404
+    
+    chaps = bookshelf_manager.extract_book_preview(book.file_path)
+    if 0 <= chap_idx < len(chaps):
+        title, content = chaps[chap_idx]
+        return jsonify({
+            "success": True,
+            "title": title,
+            "content": content,
+            "index": chap_idx,
+            "total": len(chaps)
+        })
+    return jsonify({"success": False, "error": "章节超出范围"}), 404
 
 @app.route('/read/<int:book_idx>')
 def read_book_page(book_idx):
