@@ -30,7 +30,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/book-organizer
-                    tags: |
+          tags: |
             type=raw,value=latest
             type=raw,value=2.5.0
             type=raw,value=v2.5.0
