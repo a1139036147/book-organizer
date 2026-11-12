@@ -294,6 +294,34 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
 
     initReader();
   </script>
+
+<!-- 屏幕左下角常驻固定版本号徽章 -->
+<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 12px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" title="点击查看系统版本与构建特性" onclick="showVersionInfo()">
+  <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
+  <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 500;">版本:</span>
+  <span style="color: #38bdf8; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
+</div>
+
+<script>
+function showVersionInfo() {
+  alert("📚 智能图书整理系统 All-in-One\n当前版本: v{{ app_version }}\n构建环境: Docker (Linux)\n内置数据库: PostgreSQL 16 (持久化于 /config/pgdata)\n阅读核心: 严格 Spine 正序 + 新标签页独立阅读");
+}
+</script>
+
+
+<!-- 屏幕左下角常驻固定版本号徽章 -->
+<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 12px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" title="点击查看系统版本与构建特性" onclick="showVersionInfo()">
+  <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
+  <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 500;">版本:</span>
+  <span style="color: #38bdf8; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
+</div>
+
+<script>
+function showVersionInfo() {
+  alert("📚 智能图书整理系统 All-in-One\n当前版本: v{{ app_version }}\n构建环境: Docker (Linux)\n内置数据库: PostgreSQL 16 (持久化于 /config/pgdata)\n阅读核心: 严格 Spine 正序 + 新标签页独立阅读");
+}
+</script>
+
 </body>
 </html>
 """
@@ -1458,6 +1486,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadBooks();
 });
 </script>
+
+<!-- 屏幕左下角常驻固定版本号徽章 -->
+<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 12px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" title="点击查看系统版本与构建特性" onclick="showVersionInfo()">
+  <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
+  <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 500;">版本:</span>
+  <span style="color: #38bdf8; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
+</div>
+
+<script>
+function showVersionInfo() {
+  alert("📚 智能图书整理系统 All-in-One\n当前版本: v{{ app_version }}\n构建环境: Docker (Linux)\n内置数据库: PostgreSQL 16 (持久化于 /config/pgdata)\n阅读核心: 严格 Spine 正序 + 新标签页独立阅读");
+}
+</script>
+
 </body>
 </html>
 """
@@ -1506,11 +1548,11 @@ def api_book_chapter(book_idx, chap_idx):
 
 @app.route('/read/<int:book_idx>')
 def read_book_page(book_idx):
-    return render_template_string(STANDALONE_READER_HTML, book_id=book_idx)
+    return render_template_string(STANDALONE_READER_HTML, book_id=book_idx, app_version=os.getenv('APP_VERSION', APP_VERSION))
 
 @app.route('/')
 def index():
-    return render_template_string(INDEX_HTML)
+    return render_template_string(INDEX_HTML, app_version=os.getenv('APP_VERSION', APP_VERSION))
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 14808))
