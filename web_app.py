@@ -6,433 +6,302 @@ STANDALONE_READER_HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <title>沉浸阅读器 - 智能图书管理系统</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 引入官方纯正轻量级 ePub.js 核心引擎与 jszip -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
   <style>
     :root {
-      --bg-base: #0f1117;
-      --bg-side: #181b22;
-      --bg-card: #20242e;
-      --border: #2c3240;
+      --bg-base: #101216;
+      --bg-side: #181b20;
+      --bg-card: #20242b;
+      --border: #2c323b;
       --text-main: #f1f5f9;
       --text-muted: #94a3b8;
       --accent: #0ea5e9;
-      --reader-bg: #14161d;
-      --reader-text: #e2e8f0;
-      --reader-font-size: 1.15rem;
-      --reader-line-height: 1.9;
-    }
-    body.theme-sepia {
-      --bg-base: #f4ecd8;
-      --bg-side: #e9dec4;
-      --bg-card: #ded0b4;
-      --border: #cdbe9f;
-      --text-main: #433422;
-      --text-muted: #79664f;
-      --accent: #b45309;
-      --reader-bg: #f9f4e8;
-      --reader-text: #2d241e;
-    }
-    body.theme-light {
-      --bg-base: #f8fafc;
-      --bg-side: #ffffff;
-      --bg-card: #f1f5f9;
-      --border: #e2e8f0;
-      --text-main: #0f172a;
-      --text-muted: #64748b;
-      --accent: #0284c7;
-      --reader-bg: #ffffff;
-      --reader-text: #1e293b;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg-base); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
     
-    .topbar { height: 52px; background: var(--bg-side); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; z-index: 10; }
+    /* 顶栏 */
+    .topbar { height: 50px; background: var(--bg-side); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; flex-shrink: 0; z-index: 10; }
     .top-left { display: flex; align-items: center; gap: 12px; }
-    .btn-nav-back { color: var(--text-muted); text-decoration: none; font-size: 0.88rem; font-weight: 600; padding: 6px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; }
-    .btn-nav-back:hover { color: var(--accent); border-color: var(--accent); }
-    .book-title { font-size: 1.05rem; font-weight: 700; color: var(--accent); max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .btn-back { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 600; padding: 5px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; }
+    .btn-back:hover { color: var(--accent); border-color: var(--accent); }
+    .book-title { font-size: 1rem; font-weight: 700; color: var(--accent); max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .top-right { display: flex; align-items: center; gap: 8px; }
-    .ctrl-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+    .ctrl-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 0.85rem; }
     .ctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+    /* 主舞台 */
     .main-body { flex: 1; display: flex; overflow: hidden; position: relative; }
-    .sidebar { width: 360px; background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: all 0.25s ease; flex-shrink: 0; }
-    .sidebar.collapsed { margin-left: -360px; }
+    
+    /* 左侧抽屉 */
+    .sidebar { width: 340px; background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: all 0.25s ease; flex-shrink: 0; }
+    .sidebar.collapsed { margin-left: -340px; }
     .side-tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--bg-base); }
-    .side-tab { flex: 1; text-align: center; padding: 12px 0; font-size: 0.9rem; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
+    .side-tab { flex: 1; text-align: center; padding: 10px 0; font-size: 0.88rem; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
     .side-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--bg-side); }
-    .tab-content { flex: 1; overflow-y: auto; padding: 18px; display: none; }
+    .tab-content { flex: 1; overflow-y: auto; padding: 16px; display: none; }
     .tab-content.active { display: block; }
 
-    .cover-box { text-align: center; margin-bottom: 18px; }
-    .cover-box img { max-width: 170px; max-height: 240px; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); border: 1px solid var(--border); }
-    .detail-item { font-size: 0.88rem; margin-bottom: 10px; display: flex; gap: 8px; }
-    .detail-label { color: var(--text-muted); width: 68px; flex-shrink: 0; }
+    /* 详情 */
+    .cover-box { text-align: center; margin-bottom: 14px; }
+    .cover-box img { max-width: 150px; max-height: 220px; border-radius: 6px; box-shadow: 0 8px 20px rgba(0,0,0,0.5); }
+    .detail-item { font-size: 0.85rem; margin-bottom: 8px; display: flex; gap: 6px; }
+    .detail-label { color: var(--text-muted); width: 60px; flex-shrink: 0; }
     .detail-val { color: var(--text-main); font-weight: 500; word-break: break-all; }
-    .detail-desc { margin-top: 14px; background: var(--bg-card); padding: 14px; border-radius: 8px; font-size: 0.88rem; line-height: 1.65; color: var(--text-muted); max-height: 220px; overflow-y: auto; border: 1px solid var(--border); }
-    .action-down-btn { display: block; text-align: center; margin-top: 16px; background: #0284c7; color: #fff; padding: 10px; border-radius: 6px; text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+    .detail-desc { margin-top: 10px; background: var(--bg-card); padding: 10px; border-radius: 6px; font-size: 0.85rem; line-height: 1.6; color: var(--text-muted); max-height: 180px; overflow-y: auto; }
 
-    .chap-item { padding: 10px 14px; font-size: 0.88rem; border-radius: 6px; cursor: pointer; margin-bottom: 4px; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; }
-    .chap-item:hover { background: var(--bg-card); color: var(--text-main); }
-    .chap-item.active { background: var(--accent); color: #fff; font-weight: 600; }
+    /* 目录 */
+    .toc-item { padding: 9px 12px; font-size: 0.88rem; border-radius: 6px; cursor: pointer; margin-bottom: 3px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .toc-item:hover { background: var(--bg-card); color: var(--text-main); }
+    .toc-item.active { background: var(--accent); color: #fff; font-weight: 600; }
 
-    .reader-stage { flex: 1; background: var(--reader-bg); display: flex; flex-direction: column; overflow: hidden; position: relative; }
-    .reader-scroll { flex: 1; overflow-y: auto; padding: 40px 60px; display: flex; justify-content: center; }
-    .article-container { width: 100%; max-width: 860px; font-size: var(--reader-font-size); line-height: var(--reader-line-height); color: var(--reader-text); }
-    .article-title { font-size: 1.7rem; font-weight: 800; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid var(--border); color: var(--accent); }
-    .article-container p { margin-bottom: 1.3em; text-indent: 2em; letter-spacing: 0.5px; }
+    /* 阅读器视窗 */
+    #viewerContainer { flex: 1; height: 100%; position: relative; background: #14161a; display: flex; align-items: center; justify-content: center; }
+    #epubViewer { width: 100%; height: 100%; }
 
-    .footer-bar { height: 52px; background: var(--bg-side); border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 28px; flex-shrink: 0; }
-    .page-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: 7px 16px; cursor: pointer; font-size: 0.88rem; font-weight: 600; }
-    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .page-info { font-size: 0.88rem; color: var(--text-muted); font-weight: 500; }
+    /* 悬浮左右翻页箭头 */
+    .nav-arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 70px; background: rgba(0,0,0,0.3); border: none; color: #fff; font-size: 1.6rem; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 6px; z-index: 5; opacity: 0; transition: all 0.2s; }
+    #viewerContainer:hover .nav-arrow { opacity: 0.8; }
+    .nav-arrow:hover { opacity: 1 !important; background: rgba(14,165,233,0.8); }
+    .arrow-left { left: 12px; }
+    .arrow-right { right: 12px; }
+
+    /* 底部状态 */
+    .footer-bar { height: 44px; background: var(--bg-side); border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; font-size: 0.85rem; color: var(--text-muted); }
+    
+    /* 进度遮罩 */
+    #loadingMask { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-base); z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+    .spinner { width: 36px; height: 36px; border: 3px solid rgba(14,165,233,0.2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
-<body class="theme-dark" id="appBody">
+<body>
 
+  <!-- 加载动画遮罩 -->
+  <div id="loadingMask">
+    <div class="spinner"></div>
+    <div style="font-weight:600; color:var(--text-main);" id="loadStatus">⚡ 正在启动原生 EPUB 渲染引擎 (0.1秒秒开)...</div>
+  </div>
+
+  <!-- 顶栏 -->
   <div class="topbar">
     <div class="top-left">
-      <a href="/" class="btn-nav-back">← 返回书架</a>
+      <a href="/" class="btn-back">← 返回书架</a>
       <button class="ctrl-btn" onclick="toggleSidebar()">
-        <span>☰</span> <span id="toggleText">折叠详情</span>
+        <span>☰</span> <span id="toggleText">折叠左侧</span>
       </button>
-      <div class="book-title" id="bookTitle">正在准备图书...</div>
+      <div class="book-title" id="bookTitle">正在打开图书...</div>
       <span style="background:rgba(14,165,233,0.15); color:var(--accent); border:1px solid rgba(14,165,233,0.3); padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:600;">v2.5.0</span>
     </div>
     <div class="top-right">
-      <button class="ctrl-btn" onclick="changeFontSize(-1)">A- 字号</button>
-      <button class="ctrl-btn" onclick="changeFontSize(1)">A+ 字号</button>
-      <button class="ctrl-btn" onclick="setTheme('theme-dark')">🌙 黑金</button>
-      <button class="ctrl-btn" onclick="setTheme('theme-sepia')">📜 羊皮纸</button>
-      <button class="ctrl-btn" onclick="setTheme('theme-light')">☀️ 浅色</button>
+      <button class="ctrl-btn" onclick="changeFontSize(-10)">A- 字号</button>
+      <button class="ctrl-btn" onclick="changeFontSize(10)">A+ 字号</button>
+      <button class="ctrl-btn" onclick="setTheme('dark')">🌙 黑金</button>
+      <button class="ctrl-btn" onclick="setTheme('sepia')">📜 羊皮纸</button>
+      <button class="ctrl-btn" onclick="setTheme('light')">☀️ 浅色</button>
+      <button class="ctrl-btn" onclick="toggleSpread()">📖 单/双页切换</button>
       <button class="ctrl-btn" onclick="toggleFullScreen()">⛶ 全屏</button>
-      <a id="btnDownloadTop" href="#" class="ctrl-btn" style="text-decoration:none;" target="_blank">⬇️ 导出EPUB</a>
+      <a id="btnExport" href="#" class="ctrl-btn" style="text-decoration:none;" target="_blank">⬇️ 导出EPUB</a>
     </div>
   </div>
 
+  <!-- 主体 -->
   <div class="main-body">
+    <!-- 左侧详情与大纲 -->
     <div class="sidebar" id="sidebar">
       <div class="side-tabs">
-        <div class="side-tab active" onclick="switchSideTab(0)">📖 章节大纲 (<span id="tocCount">0</span>)</div>
+        <div class="side-tab active" onclick="switchSideTab(0)">📖 权威目录</div>
         <div class="side-tab" onclick="switchSideTab(1)">ℹ️ 书籍详情</div>
       </div>
       
-      <div class="tab-content active" id="tabChapters">
-        <div style="padding:20px; color:var(--text-muted); text-align:center;">⚡ 正在瞬时加载章节大纲...</div>
+      <!-- 权威目录 (Spine骨架正序) -->
+      <div class="tab-content active" id="tabToc">
+        <div style="padding:20px; color:var(--text-muted); text-align:center;">正在提取原书目录大纲...</div>
       </div>
 
+      <!-- 详情 -->
       <div class="tab-content" id="tabDetail">
         <div class="cover-box">
-          <img id="detailCover" src="" alt="封面" style="display:none;">
-          <div id="detailFallbackCover" style="width:140px; height:200px; background:var(--bg-card); display:inline-flex; align-items:center; justify-content:center; border-radius:6px; font-size:2rem;">📚</div>
+          <img id="detCover" src="" alt="封面" style="display:none;">
+          <div id="detFallbackCover" style="width:130px; height:180px; background:var(--bg-card); display:inline-flex; align-items:center; justify-content:center; border-radius:6px; font-size:2rem;">📚</div>
         </div>
         <div class="detail-item"><span class="detail-label">书名:</span><span class="detail-val" id="detTitle">-</span></div>
         <div class="detail-item"><span class="detail-label">作者:</span><span class="detail-val" id="detAuthor">-</span></div>
         <div class="detail-item"><span class="detail-label">ISBN:</span><span class="detail-val" id="detIsbn">-</span></div>
         <div class="detail-item"><span class="detail-label">出版社:</span><span class="detail-val" id="detPublisher">-</span></div>
         <div class="detail-item"><span class="detail-label">出版年:</span><span class="detail-val" id="detYear">-</span></div>
-        <div class="detail-desc">
-          <strong>简介说明：</strong><br>
-          <span id="detDesc">暂无内容简介。</span>
-        </div>
-        <a id="btnDownloadSide" href="#" class="action-down-btn" target="_blank">⬇️ 下载原书到本地</a>
+        <div class="detail-desc" id="detDesc">暂无图书简介。</div>
       </div>
     </div>
 
-    <div class="reader-stage">
-      <div class="reader-scroll" id="scrollContainer">
-        <div class="article-container">
-          <h1 class="article-title" id="chapterHeading">正在加载章节...</h1>
-          <div id="chapterBody" style="color:var(--text-muted); line-height:2;">请稍候，正在即时解压当前章节正文...</div>
-        </div>
-      </div>
-
-      <div class="footer-bar">
-        <button class="page-btn" id="btnPrev" onclick="prevChapter()" disabled>← 上一章节</button>
-        <div class="page-info" id="pageInfo">准备中...</div>
-        <button class="page-btn" id="btnNext" onclick="nextChapter()" disabled>下一章节 →</button>
-      </div>
+    <!-- 右侧阅读器 -->
+    <div id="viewerContainer">
+      <button class="nav-arrow arrow-left" onclick="prevPage()">‹</button>
+      <div id="epubViewer"></div>
+      <button class="nav-arrow arrow-right" onclick="nextPage()">›</button>
     </div>
+  </div>
+
+  <!-- 底部状态栏 -->
+  <div class="footer-bar">
+    <div id="statusChapter">正在载入第一章...</div>
+    <div id="statusProgress">进度计算中...</div>
+    <div>提示：按键盘 ← / → 方向键翻页，F 键全屏专注</div>
   </div>
 
   <script>
     const bookId = {{ book_id }};
-    let tocList = [];
-    let currentIdx = 0;
-    let fontSize = 1.15;
+    const bookUrl = `/api/download/${bookId}`;
+    let book = null;
+    let rendition = null;
+    let currentFontSize = 100;
+    let isSpread = false;
 
-    async function initReader() {
-      document.getElementById('btnDownloadTop').href = `/api/download/${bookId}`;
-      document.getElementById('btnDownloadSide').href = `/api/download/${bookId}`;
-
-      // 1. 瞬时获取目录大纲与书籍详情 (0.05秒秒开)
-      try {
-        const res = await fetch(`/api/book/${bookId}/toc`);
-        const data = await res.json();
-        if (data.success) {
-          const book = data.book;
-          document.title = `《${book.title}》 - 沉浸阅读`;
-          document.getElementById('bookTitle').textContent = `《${book.title}》 - ${book.author || '未知作者'}`;
-          document.getElementById('detTitle').textContent = book.title;
-          document.getElementById('detAuthor').textContent = book.author || '未知作者';
-          document.getElementById('detIsbn').textContent = book.isbn || '无';
-          document.getElementById('detPublisher').textContent = book.publisher || '未知出版社';
-          document.getElementById('detYear').textContent = book.pub_year || '未知年份';
-          document.getElementById('detDesc').textContent = book.description || '暂无内容简介。';
-          if (book.cover_path) {
-            const img = document.getElementById('detailCover');
-            img.src = `/api/cover/${book.id}`;
+    async function init() {
+      document.getElementById('btnExport').href = bookUrl;
+      
+      // 1. 获取书籍详情信息
+      fetch('/api/books').then(r => r.json()).then(data => {
+        const b = data.books.find(x => x.id === bookId);
+        if (b) {
+          document.title = `《${b.title}》 - 沉浸阅读`;
+          document.getElementById('bookTitle').textContent = `《${b.title}》 - ${b.author || '未知作者'}`;
+          document.getElementById('detTitle').textContent = b.title;
+          document.getElementById('detAuthor').textContent = b.author || '未知作者';
+          document.getElementById('detIsbn').textContent = b.isbn || '无';
+          document.getElementById('detPublisher').textContent = b.publisher || '未知出版社';
+          document.getElementById('detYear').textContent = b.pub_year || '未知年份';
+          if (b.description) document.getElementById('detDesc').textContent = b.description;
+          if (b.cover_path) {
+            const img = document.getElementById('detCover');
+            img.src = `/api/cover/${b.id}`;
             img.style.display = 'inline-block';
-            document.getElementById('detailFallbackCover').style.display = 'none';
+            document.getElementById('detFallbackCover').style.display = 'none';
           }
-
-          tocList = data.toc;
-          document.getElementById('tocCount').textContent = tocList.length;
-          renderTOC();
-
-          // 2. 毫秒级即时加载当前第 1 章正文
-          loadChapter(0);
-        } else {
-          fallbackLoadAll();
         }
+      }).catch(e => {});
+
+      // 2. 原生渲染 EPUB (0.1秒秒开)
+      try {
+        book = ePub(bookUrl);
+        rendition = book.renderTo("epubViewer", {
+          width: "100%",
+          height: "100%",
+          spread: "none",
+          flow: "paginated"
+        });
+
+        // 默认暗黑主题
+        setTheme('dark');
+
+        // 展示首屏
+        await rendition.display();
+        document.getElementById('loadingMask').style.display = 'none';
+
+        // 提取原书大纲
+        book.loaded.navigation.then(nav => {
+          const tab = document.getElementById('tabToc');
+          if (nav.toc && nav.toc.length > 0) {
+            tab.innerHTML = nav.toc.map(item => `
+              <div class="toc-item" onclick="jumpTo('${item.href}')" title="${item.label.trim()}">
+                ${item.label.trim()}
+              </div>
+            `).join('');
+          } else {
+            tab.innerHTML = '<div style="padding:20px; color:var(--text-muted); text-align:center;">原书未内置目录大纲</div>';
+          }
+        });
+
+        // 监听翻页事件
+        rendition.on("relocated", location => {
+          if (book.locations.length()) {
+            const percent = Math.round(book.locations.percentageFromCfi(location.start.cfi) * 100);
+            document.getElementById('statusProgress').textContent = `阅读进度: ${percent}%`;
+          }
+        });
+
+        // 后台生成进度定位
+        book.ready.then(() => book.locations.generate(1000));
+
       } catch(err) {
-        fallbackLoadAll();
+        document.getElementById('loadStatus').innerHTML = `<span style="color:#ef4444;">打开图书失败: ${err.message || err}</span><br><br><a href="${bookUrl}" style="color:#0ea5e9;">点击此处直接下载原书并在本地打开</a>`;
       }
     }
 
-    function renderTOC() {
-      const tab = document.getElementById('tabChapters');
-      tab.innerHTML = tocList.map(c => `
-        <div class="chap-item ${c.index === currentIdx ? 'active' : ''}" onclick="selectChapter(${c.index})" id="chapItem_${c.index}">
-          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:240px;">${c.title}</span>
-          <span style="font-size:0.75rem; opacity:0.6;">第 ${c.index + 1} 节</span>
-        </div>
-      `).join('');
+    function prevPage() { if (rendition) rendition.prev(); }
+    function nextPage() { if (rendition) rendition.next(); }
+    function jumpTo(href) { if (rendition) rendition.display(href); }
+
+    function changeFontSize(delta) {
+      currentFontSize = Math.max(70, Math.min(200, currentFontSize + delta));
+      if (rendition) rendition.themes.fontSize(`${currentFontSize}%`);
     }
 
-    // 按需只解压单章 (0.01秒呈现，绝对不卡死)
-    async function loadChapter(idx) {
-      if (idx < 0 || (tocList.length > 0 && idx >= tocList.length)) return;
-      currentIdx = idx;
-      
-      document.querySelectorAll('.chap-item').forEach((el, i) => {
-        el.classList.toggle('active', i === idx);
-      });
-      const activeEl = document.getElementById(`chapItem_${idx}`);
-      if (activeEl) activeEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-
-      document.getElementById('chapterHeading').textContent = tocList[idx] ? tocList[idx].title : `第 ${idx + 1} 节`;
-      document.getElementById('chapterBody').innerHTML = '<div style="color:var(--text-muted);">⚡ 正在呈现章节内容...</div>';
-      
-      try {
-        const res = await fetch(`/api/book/${bookId}/chapter/${idx}`);
-        const data = await res.json();
-        if (data.success) {
-          document.getElementById('chapterHeading').textContent = data.title;
-          const paragraphs = data.content.split(/
-+/).filter(p => p.trim());
-          document.getElementById('chapterBody').innerHTML = paragraphs.map(p => `<p>${p.trim()}</p>`).join('');
-        } else {
-          document.getElementById('chapterBody').innerHTML = `<div style="color:#ef4444;">${data.error || '未提取到该章节文本'}</div>`;
-        }
-      } catch(err) {
-        document.getElementById('chapterBody').innerHTML = `<div style="color:#ef4444;">章节加载异常: ${err}</div>`;
+    function setTheme(theme) {
+      if (!rendition) return;
+      if (theme === 'dark') {
+        rendition.themes.register("dark", {
+          "body": { "background": "#14161a !important", "color": "#e2e8f0 !important" },
+          "p": { "line-height": "1.8 !important" }
+        });
+        rendition.themes.select("dark");
+        document.getElementById('viewerContainer').style.background = "#14161a";
+      } else if (theme === 'sepia') {
+        rendition.themes.register("sepia", {
+          "body": { "background": "#f4ecd8 !important", "color": "#3f3122 !important" },
+          "p": { "line-height": "1.8 !important" }
+        });
+        rendition.themes.select("sepia");
+        document.getElementById('viewerContainer').style.background = "#f4ecd8";
+      } else if (theme === 'light') {
+        rendition.themes.register("light", {
+          "body": { "background": "#ffffff !important", "color": "#1e293b !important" },
+          "p": { "line-height": "1.8 !important" }
+        });
+        rendition.themes.select("light");
+        document.getElementById('viewerContainer').style.background = "#ffffff";
       }
-
-      const total = tocList.length || 1;
-      document.getElementById('pageInfo').textContent = `第 ${idx + 1} / ${total} 节 · ${Math.round((idx + 1)/total*100)}%`;
-      document.getElementById('btnPrev').disabled = (idx === 0);
-      document.getElementById('btnNext').disabled = (idx === total - 1);
-      document.getElementById('scrollContainer').scrollTop = 0;
     }
 
-    // 兼容保底
-    async function fallbackLoadAll() {
-      try {
-        const res = await fetch(`/api/preview/${bookId}`);
-        const data = await res.json();
-        if (data.success && data.chapters) {
-          tocList = data.chapters.map((c, i) => ({ title: c.title, index: i }));
-          renderTOC();
-          loadChapter(0);
-        }
-      } catch(e) {}
-    }
-
-    function prevChapter() { if (currentIdx > 0) loadChapter(currentIdx - 1); }
-    function nextChapter() { if (currentIdx < tocList.length - 1) loadChapter(currentIdx + 1); }
-    function selectChapter(idx) { loadChapter(idx); }
-
-    function switchSideTab(idx) {
-      document.querySelectorAll('.side-tab').forEach((el, i) => el.classList.toggle('active', i === idx));
-      document.getElementById('tabChapters').classList.toggle('active', idx === 0);
-      document.getElementById('tabDetail').classList.toggle('active', idx === 1);
+    function toggleSpread() {
+      isSpread = !isSpread;
+      if (rendition) {
+        rendition.spread(isSpread ? "auto" : "none");
+      }
     }
 
     function toggleSidebar() {
       const side = document.getElementById('sidebar');
       const collapsed = side.classList.toggle('collapsed');
-      document.getElementById('toggleText').textContent = collapsed ? '展开详情' : '折叠详情';
+      document.getElementById('toggleText').textContent = collapsed ? '展开左侧' : '折叠左侧';
+      if (rendition) setTimeout(() => rendition.resize(), 300);
     }
 
-    function changeFontSize(delta) {
-      fontSize = Math.max(0.85, Math.min(2.2, fontSize + delta * 0.1));
-      document.documentElement.style.setProperty('--reader-font-size', fontSize + 'rem');
+    function switchSideTab(idx) {
+      document.querySelectorAll('.side-tab').forEach((el, i) => el.classList.toggle('active', i === idx));
+      document.getElementById('tabToc').classList.toggle('active', idx === 0);
+      document.getElementById('tabDetail').classList.toggle('active', idx === 1);
     }
-
-    function setTheme(theme) { document.getElementById('appBody').className = theme; }
 
     function toggleFullScreen() {
       if (!document.fullscreenElement) document.documentElement.requestFullscreen();
       else if (document.exitFullscreen) document.exitFullscreen();
     }
 
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowLeft') prevChapter();
-      if (e.key === 'ArrowRight') nextChapter();
-      if (e.key === 'f' || e.key === 'F') toggleFullScreen();
+    document.addEventListener("keydown", e => {
+      if (e.key === "ArrowLeft") prevPage();
+      if (e.key === "ArrowRight") nextPage();
+      if (e.key === "f" || e.key === "F") toggleFullScreen();
     });
 
-    initReader();
+    window.addEventListener("resize", () => {
+      if (rendition) rendition.resize();
+    });
+
+    init();
   </script>
-
-<!-- 屏幕左下角常驻固定版本号与在线热更新入口 -->
-<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 8px; background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(10px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 14px; border-radius: 20px; box-shadow: 0 6px 20px rgba(0,0,0,0.6); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" onclick="openUpdateModal()">
-  <span id="updateDot" style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
-  <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 500;">版本:</span>
-  <span style="color: #38bdf8; font-size: 0.82rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
-  <span id="updateBadgeText" style="display:none; background:#f59e0b; color:#000; font-size:0.7rem; font-weight:700; padding:1px 6px; border-radius:10px;">有更新</span>
-</div>
-
-<!-- 在线热更新模态框 -->
-<div class="modal-overlay" id="updateModal">
-  <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; width: 90%; max-width: 520px; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.7);">
-    <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-side);">
-      <div style="font-weight: 700; font-size: 1.05rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px;">
-        <span>🚀 容器在线热更新与系统升级</span>
-      </div>
-      <button class="close-modal-btn" onclick="closeModal('updateModal')">×</button>
-    </div>
-    
-    <div style="padding: 22px; display: flex; flex-direction: column; gap: 14px;">
-      <div style="background: var(--bg-base); padding: 14px; border-radius: 8px; border: 1px solid var(--border); font-size: 0.88rem; display: flex; flex-direction: column; gap: 8px;">
-        <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted);">当前容器版本:</span><span style="color:#38bdf8; font-weight:700;">v{{ app_version }}</span></div>
-        <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted);">内置数据库:</span><span style="color:#10b981; font-weight:600;">PostgreSQL 16 (健康)</span></div>
-        <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted);">远端最新提交:</span><span id="updateRemoteSha" style="color:var(--text-main); font-family:monospace;">正在检查...</span></div>
-        <div id="updateRemoteMsg" style="color:var(--text-muted); font-size:0.8rem; margin-top:4px; line-height:1.5;">正在连通 GitHub 检查更新...</div>
-      </div>
-
-      <div id="updateStatusText" style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
-        💡 <strong>在线热更新原理：</strong>无需重新拉取或构建庞大 Docker 镜像，直接在容器内毫秒级热覆盖最新代码并平滑重载，全过程只需 3 秒，书库与数据库完全不受影响！
-      </div>
-
-      <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px;">
-        <button class="btn-action btn-secondary" onclick="checkRemoteUpdate(true)" id="btnCheckUpdate">🔄 重新检查</button>
-        <button class="btn-action btn-green" onclick="doHotUpdate()" id="btnDoUpdate" style="display:none;">⚡ 立即一键热升级 (3秒)</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-function openUpdateModal() {
-  openModal('updateModal');
-  checkRemoteUpdate(false);
-}
-
-async function checkRemoteUpdate(manual) {
-  const shaEl = document.getElementById('updateRemoteSha');
-  const msgEl = document.getElementById('updateRemoteMsg');
-  const btnDo = document.getElementById('btnDoUpdate');
-  shaEl.textContent = '正在连通 GitHub 仓库...';
-  
-  try {
-    const res = await fetch('/api/system/check_update');
-    const data = await res.json();
-    if (data.success) {
-      shaEl.textContent = `${data.latest_commit} (${data.commit_date.substring(0, 10)})`;
-      msgEl.textContent = `最新提交内容: "${data.commit_message}"`;
-      
-      if (data.has_update) {
-        document.getElementById('updateDot').style.background = '#f59e0b';
-        document.getElementById('updateDot').style.boxShadow = '0 0 10px #f59e0b';
-        document.getElementById('updateBadgeText').style.display = 'inline-block';
-        btnDo.style.display = 'inline-block';
-        btnDo.innerHTML = '⚡ 立即一键热升级 (3秒)';
-      } else {
-        btnDo.style.display = 'none';
-        if (manual) alert('当前容器已是最新代码，无需更新！');
-      }
-    } else {
-      shaEl.textContent = '检查受限';
-      msgEl.textContent = data.error;
-    }
-  } catch(err) {
-    shaEl.textContent = '网络异常';
-    msgEl.textContent = '无法连接更新服务器: ' + err;
-  }
-}
-
-async function doHotUpdate() {
-  const btn = document.getElementById('btnDoUpdate');
-  const statusEl = document.getElementById('updateStatusText');
-  btn.disabled = true;
-  btn.textContent = '⏳ 正在热替换代码...';
-  statusEl.innerHTML = '<span style="color:#0ea5e9;">🚀 正在从 GitHub 极速下载最新增量包并热覆盖核心代码...</span>';
-  
-  try {
-    const res = await fetch('/api/system/hot_update', { method: 'POST' });
-    const data = await res.json();
-    if (data.success) {
-      statusEl.innerHTML = '<span style="color:#10b981; font-weight:700;">✅ 热替换成功！系统正在平滑热重载，3 秒后自动刷新页面...</span>';
-      let sec = 3;
-      const timer = setInterval(() => {
-        sec--;
-        if (sec <= 0) {
-          clearInterval(timer);
-          window.location.reload();
-        } else {
-          statusEl.innerHTML = `<span style="color:#10b981; font-weight:700;">✅ 重载就绪，将在 ${sec} 秒后自动刷新...</span>`;
-        }
-      }, 1000);
-    } else {
-      statusEl.innerHTML = `<span style="color:#ef4444;">更新失败: ${data.error}</span>`;
-      btn.disabled = false;
-      btn.textContent = '重试热升级';
-    }
-  } catch(err) {
-    // 进程退出重载时网络断开属于正常现象
-    statusEl.innerHTML = '<span style="color:#10b981; font-weight:700;">✅ 正在平滑重启 Web 服务，正在自动重新连接...</span>';
-    setTimeout(() => { window.location.reload(); }, 2500);
-  }
-}
-
-// 页面加载后 1.5 秒自动静默检测是否有更新
-document.addEventListener('DOMContentLoaded', () => {
-  setTimeout(() => { checkRemoteUpdate(false); }, 1500);
-});
-</script>
-
-
-<script>
-function showVersionInfo() {
-  alert("📚 智能图书整理系统 All-in-One\n当前版本: v{{ app_version }}\n构建环境: Docker (Linux)\n内置数据库: PostgreSQL 16 (持久化于 /config/pgdata)\n阅读核心: 严格 Spine 正序 + 新标签页独立阅读");
-}
-</script>
-
-
-<!-- 屏幕左下角常驻固定版本号徽章 -->
-<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 12px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" title="点击查看系统版本与构建特性" onclick="showVersionInfo()">
-  <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
-  <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 500;">版本:</span>
-  <span style="color: #38bdf8; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
-</div>
-
-<script>
-function showVersionInfo() {
-  alert("📚 智能图书整理系统 All-in-One\n当前版本: v{{ app_version }}\n构建环境: Docker (Linux)\n内置数据库: PostgreSQL 16 (持久化于 /config/pgdata)\n阅读核心: 严格 Spine 正序 + 新标签页独立阅读");
-}
-</script>
-
 </body>
 </html>
 """
