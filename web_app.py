@@ -1,3 +1,257 @@
+
+STANDALONE_READER_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ book.title }} - 详情与在线阅读 (v2.5.0)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg-base: #0f1117;
+      --bg-side: #181b22;
+      --bg-card: #20242e;
+      --border: #2c3240;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #0ea5e9;
+      --accent-hover: #38bdf8;
+      --reader-bg: #14161d;
+      --reader-text: #e2e8f0;
+      --reader-font-size: 1.15rem;
+      --reader-line-height: 1.9;
+    }
+    body.theme-sepia {
+      --bg-base: #f4ecd8;
+      --bg-side: #e9dec4;
+      --bg-card: #ded0b4;
+      --border: #cdbe9f;
+      --text-main: #433422;
+      --text-muted: #79664f;
+      --accent: #b45309;
+      --reader-bg: #f9f4e8;
+      --reader-text: #2d241e;
+    }
+    body.theme-light {
+      --bg-base: #f8fafc;
+      --bg-side: #ffffff;
+      --bg-card: #f1f5f9;
+      --border: #e2e8f0;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --accent: #0284c7;
+      --reader-bg: #ffffff;
+      --reader-text: #1e293b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: var(--bg-base); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    
+    /* 顶栏 */
+    .topbar { height: 52px; background: var(--bg-side); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; z-index: 10; }
+    .top-left { display: flex; align-items: center; gap: 14px; }
+    .btn-nav-back { color: var(--text-muted); text-decoration: none; font-size: 0.88rem; font-weight: 600; display: flex; align-items: center; gap: 4px; padding: 6px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; }
+    .btn-nav-back:hover { color: var(--accent); border-color: var(--accent); }
+    .book-header-title { font-size: 1.05rem; font-weight: 700; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 450px; }
+    .badge-ver { background: rgba(14,165,233,0.15); color: var(--accent); border: 1px solid rgba(14,165,233,0.3); padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .top-right { display: flex; align-items: center; gap: 8px; }
+    .ctrl-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+    .ctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* 主舞台 */
+    .main-body { flex: 1; display: flex; overflow: hidden; position: relative; }
+
+    /* 左侧详情与大纲侧边栏 */
+    .sidebar { width: 360px; background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: all 0.25s ease; flex-shrink: 0; }
+    .sidebar.collapsed { margin-left: -360px; }
+    .side-tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--bg-base); }
+    .side-tab { flex: 1; text-align: center; padding: 12px 0; font-size: 0.9rem; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
+    .side-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--bg-side); }
+    .tab-content { flex: 1; overflow-y: auto; padding: 18px; display: none; }
+    .tab-content.active { display: block; }
+
+    /* 书籍详情面板 */
+    .cover-box { text-align: center; margin-bottom: 18px; }
+    .cover-box img { max-width: 170px; max-height: 240px; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); border: 1px solid var(--border); }
+    .detail-item { font-size: 0.88rem; margin-bottom: 10px; display: flex; gap: 8px; }
+    .detail-label { color: var(--text-muted); width: 68px; flex-shrink: 0; }
+    .detail-val { color: var(--text-main); font-weight: 500; word-break: break-all; }
+    .detail-desc { margin-top: 14px; background: var(--bg-card); padding: 14px; border-radius: 8px; font-size: 0.88rem; line-height: 1.65; color: var(--text-muted); max-height: 220px; overflow-y: auto; border: 1px solid var(--border); }
+    .action-down-btn { display: block; text-align: center; margin-top: 16px; background: #0284c7; color: #fff; padding: 10px; border-radius: 6px; text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+    .action-down-btn:hover { background: #0369a1; }
+
+    /* 章节目录列表 (严格遵循 Spine 权威顺序) */
+    .chap-item { padding: 10px 14px; font-size: 0.88rem; border-radius: 6px; cursor: pointer; margin-bottom: 4px; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; }
+    .chap-item:hover { background: var(--bg-card); color: var(--text-main); }
+    .chap-item.active { background: var(--accent); color: #fff; font-weight: 600; }
+
+    /* 右侧阅读主屏 */
+    .reader-stage { flex: 1; background: var(--reader-bg); display: flex; flex-direction: column; overflow: hidden; position: relative; }
+    .reader-scroll { flex: 1; overflow-y: auto; padding: 40px 60px; display: flex; justify-content: center; }
+    .article-container { width: 100%; max-width: 860px; font-size: var(--reader-font-size); line-height: var(--reader-line-height); color: var(--reader-text); }
+    .article-title { font-size: 1.7rem; font-weight: 800; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid var(--border); color: var(--accent); }
+    .article-container p { margin-bottom: 1.3em; text-indent: 2em; letter-spacing: 0.5px; }
+
+    /* 底部控制台 */
+    .footer-bar { height: 52px; background: var(--bg-side); border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 28px; flex-shrink: 0; }
+    .page-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: 7px 16px; cursor: pointer; font-size: 0.88rem; font-weight: 600; }
+    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .page-info { font-size: 0.88rem; color: var(--text-muted); font-weight: 500; }
+  </style>
+</head>
+<body class="theme-dark" id="appBody">
+
+  <!-- 顶栏导航 -->
+  <div class="topbar">
+    <div class="top-left">
+      <a href="/" class="btn-nav-back">← 返回书架</a>
+      <button class="ctrl-btn" onclick="toggleSidebar()">
+        <span>☰</span> <span id="toggleText">折叠左侧</span>
+      </button>
+      <div class="book-header-title">《{{ book.title }}》</div>
+      <span class="badge-ver">v2.5.0</span>
+    </div>
+    <div class="top-right">
+      <button class="ctrl-btn" onclick="changeFontSize(-1)">A- 字号</button>
+      <button class="ctrl-btn" onclick="changeFontSize(1)">A+ 字号</button>
+      <button class="ctrl-btn" onclick="setTheme('theme-dark')">🌙 黑金</button>
+      <button class="ctrl-btn" onclick="setTheme('theme-sepia')">📜 羊皮纸</button>
+      <button class="ctrl-btn" onclick="setTheme('theme-light')">☀️ 浅色</button>
+      <button class="ctrl-btn" onclick="toggleFullScreen()">⛶ 全屏</button>
+      <a href="/api/download/{{ book.id }}" class="ctrl-btn" style="text-decoration:none;" target="_blank">⬇️ 导出EPUB</a>
+    </div>
+  </div>
+
+  <!-- 正文与侧边主体 -->
+  <div class="main-body">
+    <!-- 左侧可折叠面板 -->
+    <div class="sidebar" id="sidebar">
+      <div class="side-tabs">
+        <div class="side-tab active" onclick="switchSideTab(0)">📖 章节大纲</div>
+        <div class="side-tab" onclick="switchSideTab(1)">ℹ️ 书籍详情</div>
+      </div>
+      
+      <!-- 章节大纲列表 (Spine排序绝无乱序) -->
+      <div class="tab-content active" id="tabChapters">
+        {% for ch in chapters %}
+          <div class="chap-item {% if loop.first %}active{% endif %}" onclick="selectChapter({{ loop.index0 }})" id="chapItem_{{ loop.index0 }}">
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:240px;">{{ ch.title }}</span>
+            <span style="font-size:0.75rem; opacity:0.6;">第 {{ loop.index }} 节</span>
+          </div>
+        {% endfor %}
+      </div>
+
+      <!-- 书籍完整详情 -->
+      <div class="tab-content" id="tabDetail">
+        <div class="cover-box">
+          {% if book.cover_path %}
+            <img src="/api/cover/{{ book.id }}" alt="封面">
+          {% else %}
+            <div style="width:140px; height:200px; background:var(--bg-card); display:inline-flex; align-items:center; justify-content:center; border-radius:6px; font-size:2rem;">📚</div>
+          {% endif %}
+        </div>
+        <div class="detail-item"><span class="detail-label">书名:</span><span class="detail-val">{{ book.title }}</span></div>
+        <div class="detail-item"><span class="detail-label">作者:</span><span class="detail-val">{{ book.author or '未知作者' }}</span></div>
+        <div class="detail-item"><span class="detail-label">ISBN:</span><span class="detail-val">{{ book.isbn or '无' }}</span></div>
+        <div class="detail-item"><span class="detail-label">出版社:</span><span class="detail-val">{{ book.publisher or '未知出版社' }}</span></div>
+        <div class="detail-item"><span class="detail-label">出版年:</span><span class="detail-val">{{ book.pub_year or '未知年份' }}</span></div>
+        <div class="detail-desc">
+          <strong>简介说明：</strong><br>
+          {{ book.description or '暂无图书内容简介。' }}
+        </div>
+        <a href="/api/download/{{ book.id }}" class="action-down-btn" target="_blank">⬇️ 下载原书到本地</a>
+      </div>
+    </div>
+
+    <!-- 右侧阅读大舞台 -->
+    <div class="reader-stage">
+      <div class="reader-scroll" id="scrollContainer">
+        <div class="article-container">
+          <h1 class="article-title" id="chapterHeading">加载中...</h1>
+          <div id="chapterBody">正在解析图书章节内容...</div>
+        </div>
+      </div>
+
+      <!-- 底部控制栏 -->
+      <div class="footer-bar">
+        <button class="page-btn" id="btnPrev" onclick="prevChapter()">← 上一章节</button>
+        <div class="page-info" id="pageInfo">正在准备阅读...</div>
+        <button class="page-btn" id="btnNext" onclick="nextChapter()">下一章节 →</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const chaptersData = {{ chapters_json | safe }};
+    let currentIdx = 0;
+    let fontSize = 1.15;
+
+    function renderChapter(idx) {
+      if (idx < 0 || idx >= chaptersData.length) return;
+      currentIdx = idx;
+      const ch = chaptersData[idx];
+      document.getElementById('chapterHeading').textContent = ch.title;
+      
+      const paragraphs = ch.content.split(/\n+/).filter(p => p.trim());
+      document.getElementById('chapterBody').innerHTML = paragraphs.map(p => `<p>${p.trim()}</p>`).join('');
+      
+      document.querySelectorAll('.chap-item').forEach((el, i) => {
+        el.classList.toggle('active', i === idx);
+      });
+      
+      const activeEl = document.getElementById(`chapItem_${idx}`);
+      if (activeEl) activeEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+      document.getElementById('pageInfo').textContent = `第 ${idx + 1} / ${chaptersData.length} 节 · ${Math.round((idx + 1)/chaptersData.length*100)}%`;
+      document.getElementById('btnPrev').disabled = (idx === 0);
+      document.getElementById('btnNext').disabled = (idx === chaptersData.length - 1);
+      document.getElementById('scrollContainer').scrollTop = 0;
+    }
+
+    function prevChapter() { if (currentIdx > 0) renderChapter(currentIdx - 1); }
+    function nextChapter() { if (currentIdx < chaptersData.length - 1) renderChapter(currentIdx + 1); }
+    function selectChapter(idx) { renderChapter(idx); }
+
+    function switchSideTab(idx) {
+      document.querySelectorAll('.side-tab').forEach((el, i) => el.classList.toggle('active', i === idx));
+      document.getElementById('tabChapters').classList.toggle('active', idx === 0);
+      document.getElementById('tabDetail').classList.toggle('active', idx === 1);
+    }
+
+    function toggleSidebar() {
+      const side = document.getElementById('sidebar');
+      const collapsed = side.classList.toggle('collapsed');
+      document.getElementById('toggleText').textContent = collapsed ? '展开左侧' : '折叠左侧';
+    }
+
+    function changeFontSize(delta) {
+      fontSize = Math.max(0.85, Math.min(2.2, fontSize + delta * 0.1));
+      document.documentElement.style.setProperty('--reader-font-size', fontSize + 'rem');
+    }
+
+    function setTheme(theme) {
+      document.getElementById('appBody').className = theme;
+    }
+
+    function toggleFullScreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen();
+      } else if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') prevChapter();
+      if (e.key === 'ArrowRight') nextChapter();
+      if (e.key === 'f' || e.key === 'F') toggleFullScreen();
+    });
+
+    renderChapter(0);
+  </script>
+</body>
+</html>
+"""
+
+from version import APP_VERSION, BUILD_DATE, FEATURES
 # -*- coding: utf-8 -*-
 """
 Book Organizer & Bookshelf - Web Application for Docker & Browser
@@ -811,7 +1065,7 @@ header {
         <div class="modal-meta-list" id="modalMeta"></div>
         <div class="modal-desc-box" id="modalDesc">暂无简介</div>
         <div class="modal-btn-row">
-          <button class="btn-action btn-green" id="modalBtnRead" onclick="onModalRead()">📖 在线阅读</button>
+          <button class="btn-action btn-green" id="modalBtnRead" onclick="window.open('/read/' + activeBook.id, '_blank')">📖 在线阅读</button>
           <button class="btn-action btn-blue" id="modalBtnDownload" onclick="onModalDownload()">⬇️ 下载图书</button>
           <button class="btn-action btn-dark" id="modalBtnEdit" onclick="onModalEdit()">✏️ 编辑信息</button>
           <button class="btn-action btn-dark" id="modalBtnDouban" onclick="onModalDouban()">🔍 豆瓣检索</button>
@@ -1160,6 +1414,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 </body>
 </html>
 """
+
+
+@app.route('/read/<int:book_idx>')
+def read_book_page(book_idx):
+    lib_path = get_default_library_path()
+    books = bookshelf_manager.scan_bookshelf(lib_path)
+    book = next((b for b in books if b.id == book_idx), None)
+    if not book:
+        return "<h3>未找到该书籍</h3>", 404
+    raw_chaps = bookshelf_manager.extract_book_preview(book.file_path)
+    chaps_data = [{"title": t, "content": c} for t, c in raw_chaps if len(c.strip()) > 10 or len(raw_chaps) <= 2]
+    if not chaps_data:
+        chaps_data = [{"title": "正文", "content": "未能提取到正文文本"}]
+    import json
+    return render_template_string(
+        STANDALONE_READER_HTML,
+        book=book,
+        chapters=chaps_data,
+        chapters_json=json.dumps(chaps_data, ensure_ascii=False)
+    )
 
 @app.route('/')
 def index():
