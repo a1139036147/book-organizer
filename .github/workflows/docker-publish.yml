@@ -12,6 +12,20 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 自动根据构建流水序号与短哈希生成唯一递增版本号
+      - name: Generate Auto Version
+        id: auto_ver
+        run: |
+          VERSION="2.5.${{ github.run_number }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "BUILD_TIME=${BUILD_TIME}" >> $GITHUB_OUTPUT
+          echo "Generated auto version: ${VERSION} (${SHORT_SHA})"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -32,8 +46,9 @@ jobs:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/book-organizer
           tags: |
             type=raw,value=latest
-            type=raw,value=2.5.0
-            type=raw,value=v2.5.0
+            type=raw,value=${{ steps.auto_ver.outputs.VERSION }}
+            type=raw,value=v${{ steps.auto_ver.outputs.VERSION }}
+            type=raw,value=sha-${{ steps.auto_ver.outputs.SHORT_SHA }}
             type=semver,pattern={{version}}
 
       - name: Build and Push Docker image
@@ -44,3 +59,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.auto_ver.outputs.VERSION }}
+            BUILD_DATE=${{ steps.auto_ver.outputs.BUILD_TIME }}
+            GIT_COMMIT=${{ steps.auto_ver.outputs.SHORT_SHA }}

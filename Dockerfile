@@ -4,18 +4,26 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+
+# 接收 GitHub Actions 自动生成的递增版本号与构建参数
+ARG APP_VERSION=2.5.0
+ARG BUILD_DATE=""
+ARG GIT_COMMIT=""
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PORT=14808 \
+    APP_VERSION=${APP_VERSION} \
+    BUILD_DATE=${BUILD_DATE} \
+    GIT_COMMIT=${GIT_COMMIT} \
     PGHOST=127.0.0.1 \
     PGPORT=5432 \
     PGUSER=bookuser \
     PGPASSWORD=bookpass123 \
     PGDATABASE=book_library
 
-# 安装系统运行依赖、中文字体、curl 以及内置 PostgreSQL
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-wqy-microhei \
     fonts-wqy-zenhei \
