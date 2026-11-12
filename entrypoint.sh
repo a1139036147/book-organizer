@@ -40,7 +40,6 @@ fi
 echo "🚀 [PostgreSQL] 启动内置数据库服务..."
 su - postgres -c "$PG_BIN/pg_ctl -D '$PGDATA' -l /config/postgres.log -w start"
 
-# 自动创建专属用户与数据库
 su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname = 'book_library'\" | grep -q 1 || psql -c \"CREATE USER bookuser WITH PASSWORD 'bookpass123'; CREATE DATABASE book_library OWNER bookuser;\""
 
 cleanup() {
@@ -52,7 +51,7 @@ trap cleanup SIGTERM SIGINT
 
 if [ "$1" = "web" ] || [ -z "$1" ]; then
     echo "=========================================================="
-    echo "  📚 智能图书整理系统 All-in-One (内置PG + 原版Koodo启动)"
+    echo "  📚 智能图书整理系统 All-in-One (内置PG + 现代书架启动)"
     echo "  Web 地址:    http://0.0.0.0:${PORT:-14808}"
     echo "  数据持久化:  /config/pgdata"
     echo "=========================================================="

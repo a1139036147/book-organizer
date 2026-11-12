@@ -1,8 +1,6 @@
 # -------------------------------------------------------------
-# Dockerfile for Book Organizer All-in-One (内置 PostgreSQL + 原版 Koodo Reader)
+# Dockerfile for Book Organizer All-in-One (内置 PostgreSQL + 规范化书库与阅读器)
 # -------------------------------------------------------------
-FROM ghcr.io/koodo-reader/koodo-reader:latest AS koodo-asset
-
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -17,6 +15,7 @@ ENV PYTHONUNBUFFERED=1 \
     PGPASSWORD=bookpass123 \
     PGDATABASE=book_library
 
+# 安装系统运行依赖、中文字体、curl 以及内置 PostgreSQL
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-wqy-microhei \
     fonts-wqy-zenhei \
@@ -33,21 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 将原装正版官方 Koodo Reader 纯静态应用完整塞入
-COPY --from=koodo-asset /usr/share/caddy /app/koodo_reader
+# 复制全部应用源码与静态资源
+COPY . /app/
 
-COPY config.py .
-COPY metadata_provider.py .
-COPY epub_handler.py .
-COPY opf_generator.py .
-COPY book_organizer.py .
-COPY bookshelf_manager.py .
-COPY calibre_shim.py .
-COPY db_manager.py .
-COPY web_app.py .
-COPY entrypoint.sh .
-
-RUN chmod +x entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 VOLUME ["/source", "/library", "/config"]
 EXPOSE 14808
