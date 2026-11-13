@@ -1,309 +1,12 @@
 from plugins_manager import plugin_manager
 
 STANDALONE_READER_HTML = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <title>沉浸阅读器 - 智能图书管理系统</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- 引入官方纯正轻量级 ePub.js 核心引擎与 jszip -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
-  <style>
-    :root {
-      --bg-base: #101216;
-      --bg-side: #181b20;
-      --bg-card: #20242b;
-      --border: #2c323b;
-      --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
-      --accent: #0ea5e9;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg-base); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-    
-    /* 顶栏 */
-    .topbar { height: 50px; background: var(--bg-side); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; flex-shrink: 0; z-index: 10; }
-    .top-left { display: flex; align-items: center; gap: 12px; }
-    .btn-back { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 600; padding: 5px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; }
-    .btn-back:hover { color: var(--accent); border-color: var(--accent); }
-    .book-title { font-size: 1rem; font-weight: 700; color: var(--accent); max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .top-right { display: flex; align-items: center; gap: 8px; }
-    .ctrl-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 0.85rem; }
-    .ctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
-
-    /* 主舞台 */
-    .main-body { flex: 1; display: flex; overflow: hidden; position: relative; }
-    
-    /* 左侧抽屉 */
-    .sidebar { width: 340px; background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: all 0.25s ease; flex-shrink: 0; }
-    .sidebar.collapsed { margin-left: -340px; }
-    .side-tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--bg-base); }
-    .side-tab { flex: 1; text-align: center; padding: 10px 0; font-size: 0.88rem; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
-    .side-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--bg-side); }
-    .tab-content { flex: 1; overflow-y: auto; padding: 16px; display: none; }
-    .tab-content.active { display: block; }
-
-    /* 详情 */
-    .cover-box { text-align: center; margin-bottom: 14px; }
-    .cover-box img { max-width: 150px; max-height: 220px; border-radius: 6px; box-shadow: 0 8px 20px rgba(0,0,0,0.5); }
-    .detail-item { font-size: 0.85rem; margin-bottom: 8px; display: flex; gap: 6px; }
-    .detail-label { color: var(--text-muted); width: 60px; flex-shrink: 0; }
-    .detail-val { color: var(--text-main); font-weight: 500; word-break: break-all; }
-    .detail-desc { margin-top: 10px; background: var(--bg-card); padding: 10px; border-radius: 6px; font-size: 0.85rem; line-height: 1.6; color: var(--text-muted); max-height: 180px; overflow-y: auto; }
-
-    /* 目录 */
-    .toc-item { padding: 9px 12px; font-size: 0.88rem; border-radius: 6px; cursor: pointer; margin-bottom: 3px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .toc-item:hover { background: var(--bg-card); color: var(--text-main); }
-    .toc-item.active { background: var(--accent); color: #fff; font-weight: 600; }
-
-    /* 阅读器视窗 */
-    #viewerContainer { flex: 1; height: 100%; position: relative; background: #14161a; display: flex; align-items: center; justify-content: center; }
-    #epubViewer { width: 100%; height: 100%; }
-
-    /* 悬浮左右翻页箭头 */
-    .nav-arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 70px; background: rgba(0,0,0,0.3); border: none; color: #fff; font-size: 1.6rem; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 6px; z-index: 5; opacity: 0; transition: all 0.2s; }
-    #viewerContainer:hover .nav-arrow { opacity: 0.8; }
-    .nav-arrow:hover { opacity: 1 !important; background: rgba(14,165,233,0.8); }
-    .arrow-left { left: 12px; }
-    .arrow-right { right: 12px; }
-
-    /* 底部状态 */
-    .footer-bar { height: 44px; background: var(--bg-side); border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; font-size: 0.85rem; color: var(--text-muted); }
-    
-    /* 进度遮罩 */
-    #loadingMask { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-base); z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
-    .spinner { width: 36px; height: 36px; border: 3px solid rgba(14,165,233,0.2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-  </style>
-</head>
-<body>
-
-  <!-- 加载动画遮罩 -->
-  <div id="loadingMask">
-    <div class="spinner"></div>
-    <div style="font-weight:600; color:var(--text-main);" id="loadStatus">⚡ 正在启动原生 EPUB 渲染引擎 (0.1秒秒开)...</div>
-  </div>
-
-  <!-- 顶栏 -->
-  <div class="topbar">
-    <div class="top-left">
-      <a href="/" class="btn-back">← 返回书架</a>
-      <button class="ctrl-btn" onclick="toggleSidebar()">
-        <span>☰</span> <span id="toggleText">折叠左侧</span>
-      </button>
-      <div class="book-title" id="bookTitle">正在打开图书...</div>
-      <span style="background:rgba(14,165,233,0.15); color:var(--accent); border:1px solid rgba(14,165,233,0.3); padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:600;">v2.5.0</span>
-    </div>
-    <div class="top-right">
-      <button class="ctrl-btn" onclick="changeFontSize(-10)">A- 字号</button>
-      <button class="ctrl-btn" onclick="changeFontSize(10)">A+ 字号</button>
-      <button class="ctrl-btn" onclick="setTheme('dark')">🌙 黑金</button>
-      <button class="ctrl-btn" onclick="setTheme('sepia')">📜 羊皮纸</button>
-      <button class="ctrl-btn" onclick="setTheme('light')">☀️ 浅色</button>
-      <button class="ctrl-btn" onclick="toggleSpread()">📖 单/双页切换</button>
-      <button class="ctrl-btn" onclick="toggleFullScreen()">⛶ 全屏</button>
-      <a id="btnExport" href="#" class="ctrl-btn" style="text-decoration:none;" target="_blank">⬇️ 导出EPUB</a>
-    </div>
-  </div>
-
-  <!-- 主体 -->
-  <div class="main-body">
-    <!-- 左侧详情与大纲 -->
-    <div class="sidebar" id="sidebar">
-      <div class="side-tabs">
-        <div class="side-tab active" onclick="switchSideTab(0)">📖 权威目录</div>
-        <div class="side-tab" onclick="switchSideTab(1)">ℹ️ 书籍详情</div>
-      </div>
-      
-      <!-- 权威目录 (Spine骨架正序) -->
-      <div class="tab-content active" id="tabToc">
-        <div style="padding:20px; color:var(--text-muted); text-align:center;">正在提取原书目录大纲...</div>
-      </div>
-
-      <!-- 详情 -->
-      <div class="tab-content" id="tabDetail">
-        <div class="cover-box">
-          <img id="detCover" src="" alt="封面" style="display:none;">
-          <div id="detFallbackCover" style="width:130px; height:180px; background:var(--bg-card); display:inline-flex; align-items:center; justify-content:center; border-radius:6px; font-size:2rem;">📚</div>
-        </div>
-        <div class="detail-item"><span class="detail-label">书名:</span><span class="detail-val" id="detTitle">-</span></div>
-        <div class="detail-item"><span class="detail-label">作者:</span><span class="detail-val" id="detAuthor">-</span></div>
-        <div class="detail-item"><span class="detail-label">ISBN:</span><span class="detail-val" id="detIsbn">-</span></div>
-        <div class="detail-item"><span class="detail-label">出版社:</span><span class="detail-val" id="detPublisher">-</span></div>
-        <div class="detail-item"><span class="detail-label">出版年:</span><span class="detail-val" id="detYear">-</span></div>
-        <div class="detail-desc" id="detDesc">暂无图书简介。</div>
-      </div>
-    </div>
-
-    <!-- 右侧阅读器 -->
-    <div id="viewerContainer">
-      <button class="nav-arrow arrow-left" onclick="prevPage()">‹</button>
-      <div id="epubViewer"></div>
-      <button class="nav-arrow arrow-right" onclick="nextPage()">›</button>
-    </div>
-  </div>
-
-  <!-- 底部状态栏 -->
-  <div class="footer-bar">
-    <div id="statusChapter">正在载入第一章...</div>
-    <div id="statusProgress">进度计算中...</div>
-    <div>提示：按键盘 ← / → 方向键翻页，F 键全屏专注</div>
-  </div>
-
-  <script>
-    const bookId = {{ book_id }};
-    const bookUrl = `/api/download/${bookId}`;
-    let book = null;
-    let rendition = null;
-    let currentFontSize = 100;
-    let isSpread = false;
-
-    async function init() {
-      document.getElementById('btnExport').href = bookUrl;
-      
-      // 1. 获取书籍详情信息
-      fetch('/api/books').then(r => r.json()).then(data => {
-        const b = data.books.find(x => x.id === bookId);
-        if (b) {
-          document.title = `《${b.title}》 - 沉浸阅读`;
-          document.getElementById('bookTitle').textContent = `《${b.title}》 - ${b.author || '未知作者'}`;
-          document.getElementById('detTitle').textContent = b.title;
-          document.getElementById('detAuthor').textContent = b.author || '未知作者';
-          document.getElementById('detIsbn').textContent = b.isbn || '无';
-          document.getElementById('detPublisher').textContent = b.publisher || '未知出版社';
-          document.getElementById('detYear').textContent = b.pub_year || '未知年份';
-          if (b.description) document.getElementById('detDesc').textContent = b.description;
-          if (b.cover_path) {
-            const img = document.getElementById('detCover');
-            img.src = `/api/cover/${b.id}`;
-            img.style.display = 'inline-block';
-            document.getElementById('detFallbackCover').style.display = 'none';
-          }
-        }
-      }).catch(e => {});
-
-      // 2. 原生渲染 EPUB (0.1秒秒开)
-      try {
-        book = ePub(bookUrl);
-        rendition = book.renderTo("epubViewer", {
-          width: "100%",
-          height: "100%",
-          spread: "none",
-          flow: "paginated"
-        });
-
-        // 默认暗黑主题
-        setTheme('dark');
-
-        // 展示首屏
-        await rendition.display();
-        document.getElementById('loadingMask').style.display = 'none';
-
-        // 提取原书大纲
-        book.loaded.navigation.then(nav => {
-          const tab = document.getElementById('tabToc');
-          if (nav.toc && nav.toc.length > 0) {
-            tab.innerHTML = nav.toc.map(item => `
-              <div class="toc-item" onclick="jumpTo('${item.href}')" title="${item.label.trim()}">
-                ${item.label.trim()}
-              </div>
-            `).join('');
-          } else {
-            tab.innerHTML = '<div style="padding:20px; color:var(--text-muted); text-align:center;">原书未内置目录大纲</div>';
-          }
-        });
-
-        // 监听翻页事件
-        rendition.on("relocated", location => {
-          if (book.locations.length()) {
-            const percent = Math.round(book.locations.percentageFromCfi(location.start.cfi) * 100);
-            document.getElementById('statusProgress').textContent = `阅读进度: ${percent}%`;
-          }
-        });
-
-        // 后台生成进度定位
-        book.ready.then(() => book.locations.generate(1000));
-
-      } catch(err) {
-        document.getElementById('loadStatus').innerHTML = `<span style="color:#ef4444;">打开图书失败: ${err.message || err}</span><br><br><a href="${bookUrl}" style="color:#0ea5e9;">点击此处直接下载原书并在本地打开</a>`;
-      }
-    }
-
-    function prevPage() { if (rendition) rendition.prev(); }
-    function nextPage() { if (rendition) rendition.next(); }
-    function jumpTo(href) { if (rendition) rendition.display(href); }
-
-    function changeFontSize(delta) {
-      currentFontSize = Math.max(70, Math.min(200, currentFontSize + delta));
-      if (rendition) rendition.themes.fontSize(`${currentFontSize}%`);
-    }
-
-    function setTheme(theme) {
-      if (!rendition) return;
-      if (theme === 'dark') {
-        rendition.themes.register("dark", {
-          "body": { "background": "#14161a !important", "color": "#e2e8f0 !important" },
-          "p": { "line-height": "1.8 !important" }
-        });
-        rendition.themes.select("dark");
-        document.getElementById('viewerContainer').style.background = "#14161a";
-      } else if (theme === 'sepia') {
-        rendition.themes.register("sepia", {
-          "body": { "background": "#f4ecd8 !important", "color": "#3f3122 !important" },
-          "p": { "line-height": "1.8 !important" }
-        });
-        rendition.themes.select("sepia");
-        document.getElementById('viewerContainer').style.background = "#f4ecd8";
-      } else if (theme === 'light') {
-        rendition.themes.register("light", {
-          "body": { "background": "#ffffff !important", "color": "#1e293b !important" },
-          "p": { "line-height": "1.8 !important" }
-        });
-        rendition.themes.select("light");
-        document.getElementById('viewerContainer').style.background = "#ffffff";
-      }
-    }
-
-    function toggleSpread() {
-      isSpread = !isSpread;
-      if (rendition) {
-        rendition.spread(isSpread ? "auto" : "none");
-      }
-    }
-
-    function toggleSidebar() {
-      const side = document.getElementById('sidebar');
-      const collapsed = side.classList.toggle('collapsed');
-      document.getElementById('toggleText').textContent = collapsed ? '展开左侧' : '折叠左侧';
-      if (rendition) setTimeout(() => rendition.resize(), 300);
-    }
-
-    function switchSideTab(idx) {
-      document.querySelectorAll('.side-tab').forEach((el, i) => el.classList.toggle('active', i === idx));
-      document.getElementById('tabToc').classList.toggle('active', idx === 0);
-      document.getElementById('tabDetail').classList.toggle('active', idx === 1);
-    }
-
-    function toggleFullScreen() {
-      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-      else if (document.exitFullscreen) document.exitFullscreen();
-    }
-
-    document.addEventListener("keydown", e => {
-      if (e.key === "ArrowLeft") prevPage();
-      if (e.key === "ArrowRight") nextPage();
-      if (e.key === "f" || e.key === "F") toggleFullScreen();
-    });
-
-    window.addEventListener("resize", () => {
-      if (rendition) rendition.resize();
-    });
-
-    init();
-  </script>
-</body>
-</html>
+<html><head><meta charset="UTF-8"><title>Koodo Reader</title></head>
+<body><script>
+var bookId = {{ book_id }};
+var bookUrl = window.location.origin + "/api/download/" + bookId;
+window.location.href = "/koodo/index.html";
+</script></body></html>
 """
 
 from version import APP_VERSION, BUILD_DATE, FEATURES
@@ -1526,9 +1229,63 @@ def api_book_chapter(book_idx, chap_idx):
         })
     return jsonify({"success": False, "error": "章节超出范围"}), 404
 
+
+# ---- Koodo Reader static files ----
+KOODO_DIR = os.path.join(APP_DIR, 'koodo_reader')
+
+@app.route('/koodo/')
+def koodo_index():
+    return send_file(os.path.join(KOODO_DIR, 'index.html'))
+
+@app.route('/koodo/<path:filename>')
+def koodo_static(filename):
+    fpath = os.path.join(KOODO_DIR, filename)
+    if os.path.isfile(fpath):
+        mt, _ = mimetypes.guess_type(fpath)
+        return send_file(fpath, mimetype=mt or 'application/octet-stream')
+    idx_p = os.path.join(fpath, 'index.html')
+    if os.path.isfile(idx_p):
+        return send_file(idx_p)
+    return 'Not Found', 404
+
+# ---- Version and Hot-Update APIs ----
+@app.route('/api/version')
+def api_version():
+    return jsonify({
+        "version": APP_VERSION,
+        "build_date": BUILD_DATE,
+        "git_commit": os.getenv('GIT_COMMIT', ''),
+        "features": FEATURES
+    })
+
+@app.route('/api/system/check_update')
+def api_check_update():
+    import subprocess as _sp
+    try:
+        r = _sp.run(['git', 'ls-remote', 'https://github.com/a1139036147/book-organizer.git', 'HEAD'],
+                    capture_output=True, text=True, timeout=10)
+        remote_sha = r.stdout.strip().split()[0][:7] if r.stdout.strip() else ''
+        local_sha = os.getenv('GIT_COMMIT', '')
+        has_update = bool(remote_sha and local_sha and remote_sha != local_sha)
+        return jsonify({"has_update": has_update, "local_commit": local_sha, "remote_commit": remote_sha, "current_version": APP_VERSION})
+    except Exception as ex:
+        return jsonify({"has_update": False, "error": str(ex)})
+
+@app.route('/api/system/hot_update', methods=['POST'])
+def api_hot_update():
+    import subprocess as _sp
+    try:
+        r = _sp.run(['git', 'pull', '--ff-only', 'origin', 'main'],
+                    capture_output=True, text=True, timeout=60, cwd=APP_DIR)
+        if r.returncode == 0:
+            os._exit(0)
+        return jsonify({"success": False, "error": r.stderr})
+    except Exception as ex:
+        return jsonify({"success": False, "error": str(ex)})
+
 @app.route('/read/<int:book_idx>')
 def read_book_page(book_idx):
-    return render_template_string(STANDALONE_READER_HTML, book_id=book_idx, app_version=os.getenv('APP_VERSION', APP_VERSION))
+    return render_template_string(STANDALONE_READER_HTML, book_id=book_idx)
 
 @app.route('/')
 def index():
