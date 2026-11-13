@@ -15,17 +15,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 自动根据构建流水序号与短哈希生成唯一递增版本号
       - name: Generate Auto Version
         id: auto_ver
         run: |
-          VERSION="2.5.${{ github.run_number }}"
+          VERSION="2.6.${{ github.run_number }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           BUILD_TIME=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "BUILD_TIME=${BUILD_TIME}" >> $GITHUB_OUTPUT
           echo "Generated auto version: ${VERSION} (${SHORT_SHA})"
+
+      # ── 原生秒级编译 Koodo Reader 纯前端（跳过 C++ 脚本，30秒完成） ────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build Official Koodo Reader Web Application
+        run: |
+          echo "Cloning official Koodo Reader repo..."
+          git clone --depth 1 https://github.com/koodo-reader/koodo-reader.git koodo-src
+          cd koodo-src
+          echo "Installing dependencies with --ignore-scripts..."
+          yarn --ignore-scripts
+          echo "Building Koodo Reader web assets..."
+          yarn build
+          echo "Copying build output to application..."
+          mkdir -p ../koodo_reader
+          cp -r build/* ../koodo_reader/
+          cd ..
+          rm -rf koodo-src
+          echo "Koodo Reader build complete! Output files:"
+          ls -la koodo_reader/
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
