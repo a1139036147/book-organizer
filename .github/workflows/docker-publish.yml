@@ -27,28 +27,22 @@ jobs:
           echo "Generated auto version: ${VERSION} (${SHORT_SHA})"
 
       # ── 原生秒级编译 Koodo Reader 纯前端（跳过 C++ 脚本，30秒完成） ────────
-      - name: Set up Node.js
+       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Build Official Koodo Reader Web Application
         run: |
-          echo "Cloning official Koodo Reader repo..."
           git clone --depth 1 https://github.com/koodo-reader/koodo-reader.git koodo-src
           cd koodo-src
-          echo "Installing dependencies with --ignore-scripts..."
           yarn --ignore-scripts
-          echo "Building Koodo Reader web assets..."
           yarn build
-          echo "Copying build output to application..."
           mkdir -p ../koodo_reader
           cp -r build/* ../koodo_reader/
           cd ..
           rm -rf koodo-src
-          echo "Koodo Reader build complete! Output files:"
-          ls -la koodo_reader/
-
+          
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
