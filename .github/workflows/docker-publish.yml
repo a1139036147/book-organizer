@@ -24,25 +24,23 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "BUILD_TIME=${BUILD_TIME}" >> $GITHUB_OUTPUT
-          echo "Generated auto version: ${VERSION} (${SHORT_SHA})"
 
-      # ── 原生秒级编译 Koodo Reader 纯前端（跳过 C++ 脚本，30秒完成） ────────
-       - name: Set up Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Build Official Koodo Reader Web Application
+      - name: Build Official Koodo Reader
         run: |
-          git clone --depth 1 https://github.com/koodo-reader/koodo-reader.git koodo-src
-          cd koodo-src
+          git clone --depth 1 https://github.com/koodo-reader/koodo-reader.git /tmp/koodo-src
+          cd /tmp/koodo-src
           yarn --ignore-scripts
           yarn build
-          mkdir -p ../koodo_reader
-          cp -r build/* ../koodo_reader/
-          cd ..
-          rm -rf koodo-src
-          
+          mkdir -p $GITHUB_WORKSPACE/koodo_reader
+          cp -r build/* $GITHUB_WORKSPACE/koodo_reader/
+          cd $GITHUB_WORKSPACE
+          rm -rf /tmp/koodo-src
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -55,7 +53,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -65,7 +63,6 @@ jobs:
             type=raw,value=${{ steps.auto_ver.outputs.VERSION }}
             type=raw,value=v${{ steps.auto_ver.outputs.VERSION }}
             type=raw,value=sha-${{ steps.auto_ver.outputs.SHORT_SHA }}
-            type=semver,pattern={{version}}
 
       - name: Build and Push Docker image
         uses: docker/build-push-action@v6
