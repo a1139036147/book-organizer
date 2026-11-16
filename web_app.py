@@ -453,6 +453,7 @@ INDEX_HTML = """<!DOCTYPE html>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scrollbar-gutter: stable; }
 html:has(.modal-overlay.open, #systemUpdate[open]) { overflow: hidden; }
+#applyUpdate[hidden] { display: none; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
   background-color: var(--bg-app);
