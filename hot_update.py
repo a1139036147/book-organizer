@@ -8,6 +8,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import time
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
@@ -46,6 +47,13 @@ def state_dir():
 
 
 def latest_release():
+    try:
+        return github_release()
+    except (URLError, TimeoutError, ValueError, KeyError, UpdateError):
+        return docker_hub_release()
+
+
+def github_release():
     request = Request(PUBLISHED_RUNS, headers={"Accept": "application/vnd.github+json"})
     with urlopen(request, timeout=10) as response:
         runs = json.load(response)["workflow_runs"]
@@ -57,6 +65,48 @@ def latest_release():
     if not COMMIT_PATTERN.fullmatch(commit):
         raise UpdateError("发布提交编号无效。")
     return {"commit": commit, "version": version, "build_date": run["created_at"]}
+
+
+def docker_hub_release():
+    repository = "arros/book-organizer"
+    registry = f"https://registry-1.docker.io/v2/{repository}"
+    with urlopen(
+        f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repository}:pull",
+        timeout=10,
+    ) as response:
+        token = json.load(response)["token"]
+
+    def read(path, accept):
+        request = Request(
+            registry + path,
+            headers={"Accept": accept},
+        )
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
+        with urlopen(request, timeout=10) as response:
+            return json.load(response)
+
+    manifest_types = ", ".join((
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    ))
+    manifest = read("/manifests/latest", manifest_types)
+    if "manifests" in manifest:
+        platform = next((
+            item for item in manifest["manifests"]
+            if item.get("platform", {}).get("os") == "linux"
+            and item.get("platform", {}).get("architecture") == "amd64"
+        ), None)
+        if not platform:
+            raise UpdateError("Docker Hub 上的镜像缺少可识别的 Linux 构建。")
+        manifest = read("/manifests/" + platform["digest"], manifest_types)
+    image = read("/blobs/" + manifest["config"]["digest"], "application/octet-stream")
+    env = dict(item.split("=", 1) for item in image["config"]["Env"] if "=" in item)
+    commit, version = env.get("GIT_COMMIT", ""), env.get("APP_VERSION", "")
+    if not COMMIT_PATTERN.fullmatch(commit) or not VERSION_PATTERN.fullmatch(version):
+        raise UpdateError("Docker Hub 上的镜像缺少有效的版本或提交编号。")
+    return {"commit": commit, "version": version, "build_date": env.get("BUILD_DATE", "")}
 
 
 def has_update(release, current_commit, current_version):

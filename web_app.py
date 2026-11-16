@@ -1502,7 +1502,7 @@ def api_check_update():
         )
     except Exception:
         app.logger.exception("Unable to check for published updates")
-        return jsonify(error="无法检查更新，请确认容器能够访问 GitHub 后重试。"), 502
+        return jsonify(error="无法读取发布版本，请检查容器到 GitHub 和 Docker Hub 的连接，或直接拉取新版镜像。"), 502
 
 
 @app.route('/api/system/hot_update', methods=['GET', 'POST'])
