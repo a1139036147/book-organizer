@@ -1,0 +1,118 @@
+--- a/src/components/importLocal/component.tsx
++++ b/src/components/importLocal/component.tsx
+@@ -142,6 +142,68 @@
+     ((e?: React.MouseEvent, externalUrl?: string) => Promise<void>) | null
+   >(null);
+
++  const bookshelfRequestStarted = useRef(false);
++  useEffect(() => {
++    const query = window.location.hash.split("?")[1];
++    const filePath = new URLSearchParams(query).get("bookshelfFile");
++    if (isElectron || !filePath || bookshelfRequestStarted.current) return;
++    bookshelfRequestStarted.current = true;
++
++    async function openBookshelfBook() {
++      try {
++        const url = new URL(filePath!, window.location.origin);
++        const apiPrefix = new URL("../api/reader-file/", document.baseURI);
++        const relativePath = url.pathname.slice(apiPrefix.pathname.length);
++        if (
++          url.origin !== apiPrefix.origin ||
++          !url.pathname.startsWith(apiPrefix.pathname) ||
++          !/^\d+\/[a-f0-9]{64}\/[^/]+$/.test(relativePath)
++        ) {
++          throw new Error("Invalid bookshelf file URL");
++        }
++        const filename = decodeURIComponent(relativePath.split("/").pop()!);
++        const dot = filename.lastIndexOf(".");
++        const extension = filename.slice(dot + 1).toLowerCase();
++        if (dot < 0 || !supportedFormats.includes("." + extension)) {
++          throw new Error(t("Unsupported file format"));
++        }
++        toast.loading(t("Downloading, please wait"), { id: "bookshelf-book" });
++        const response = await fetch(url);
++        if (!response.ok) throw new Error(`HTTP ${response.status}`);
++        const file = new File([await response.blob()], filename);
++        const md5 = await calculateFileMD5(file);
++        if (!md5) throw new Error("Cannot identify bookshelf file");
++
++        const importOrReuse = async () => {
++          const existing = await BookUtil.getBookByMd5(md5);
++          if (existing) return existing;
++          await importBookSource(
++            filename.slice(0, dot), extension, md5, await file.arrayBuffer(),
++            file.size, "", filename, false, true
++          );
++          return BookUtil.getBookByMd5(md5);
++        };
++        const book = navigator.locks
++          ? await navigator.locks.request("bookshelf-import", importOrReuse)
++          : await importOrReuse();
++        if (!book) throw new Error(t("Import failed"));
++
++        ConfigService.setListConfig(book.key, "recentBooks");
++        const params = new URLSearchParams({ title: book.name, file: book.key });
++        navigate(`${BookUtil.getBookUrl(book)}?${params}`, { replace: true });
++        toast.dismiss("bookshelf-book");
++      } catch (error) {
++        console.error("Unable to open bookshelf book", error);
++        toast.error(`无法打开书架图书。请刷新页面重试。 ${String(error)}`, {
++          id: "bookshelf-book",
++          duration: Infinity,
++        });
++      }
++    }
++
++    void openBookshelfBook();
++  }, []);
++
+   useEffect(() => {
+     let focusHandler: (() => void) | null = null;
+     if (isElectron) {
+@@ -253,7 +315,8 @@
+     book: BookModel,
+     buffer: ArrayBuffer,
+     sourcePath?: string,
+-    isConverted = false
++    isConverted = false,
++    fromBookshelf = false
+   ) => {
+     return new Promise<void>(async (resolve) => {
+       toast.loading(
+@@ -308,7 +371,7 @@
+         }
+       } else {
+         if (
+-          !isImportPath ||
++          fromBookshelf || !isImportPath ||
+           (isAuthed && ConfigService.getItem("defaultSyncOption"))
+         ) {
+           await BookUtil.addBook(
+@@ -342,6 +405,7 @@
+               id: "add-book",
+             }
+           );
++          if (fromBookshelf) return resolve();
+           setTimeout(() => {
+             stateRef.current.isOpenFile && handleJump(book);
+             if (
+@@ -768,7 +832,8 @@
+     fileSize: number,
+     filePath: string,
+     recordPath: string,
+-    isConverted = false
++    isConverted = false,
++    fromBookshelf = false
+   ): Promise<BookModel | null> => {
+     let result: BookModel;
+     try {
+@@ -862,7 +927,8 @@
+       result as BookModel,
+       file_content as ArrayBuffer,
+       filePath,
+-      isConverted
++      isConverted,
++      fromBookshelf
+     );
+
+     return result as BookModel;

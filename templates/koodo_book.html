@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ book.title }} · Koodo Reader</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100dvh; display: flex; background: #111827; color: #e5e7eb; font: 15px/1.6 system-ui, sans-serif; }
+  details { width: min(280px, 32vw); padding: 16px; overflow: auto; }
+  details:not([open]) { width: auto; }
+  summary { cursor: pointer; }
+  img { display: block; max-width: 120px; margin-top: 16px; }
+  h1 { font-size: 1.2rem; overflow-wrap: anywhere; }
+  p { white-space: pre-wrap; overflow-wrap: anywhere; }
+  a { color: #7dd3fc; }
+  iframe { flex: 1; min-width: 0; border: 0; background: #fff; }
+  @media (max-width: 640px) {
+    body { flex-direction: column; }
+    details, details:not([open]) { width: 100%; max-height: 28dvh; padding: 6px 12px; }
+  }
+</style>
+<details open id="book-details">
+  <summary>书架详情</summary>
+  <img src="{{ url_for('api_cover', book_idx=book_idx) }}" alt="">
+  <h1>{{ book.title }}</h1>
+  {% if book.author %}<div>{{ book.author }}</div>{% endif %}
+  {% if book.publisher %}<div>{{ book.publisher }}</div>{% endif %}
+  {% if book.pubdate %}<div>{{ book.pubdate }}</div>{% endif %}
+  {% if book.isbn %}<div>ISBN {{ book.isbn }}</div>{% endif %}
+  <div>{{ book.format }} · {{ book.file_size_str }}</div>
+  {% if book.description %}<p>{{ book.description }}</p>{% endif %}
+  <p><a href="{{ file_url }}">下载原文件</a></p>
+  <a href="{{ url_for('koodo_static', filename='koodo-source.tar.gz') }}">Koodo Reader 源码</a>
+</details>
+<iframe src="{{ reader_url }}" title="Koodo Reader" allow="fullscreen"></iframe>
+<script>
+  if (matchMedia('(max-width: 640px)').matches) {
+    document.getElementById('book-details').open = false;
+  }
+</script>

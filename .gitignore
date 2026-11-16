@@ -8,6 +8,7 @@ build/
 dist/
 *.exe
 .deps/
+koodo_reader/
 tcl/
 
 # Personal / Local Configuration

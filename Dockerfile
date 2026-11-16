@@ -1,6 +1,23 @@
-﻿# -------------------------------------------------------------
+# syntax=docker/dockerfile:1
+# -------------------------------------------------------------
 # Dockerfile for Book Organizer All-in-One (内置 PostgreSQL + Koodo Reader)
 # -------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS koodo-web
+
+WORKDIR /koodo-src
+ADD --checksum=sha256:d3ceeb1684651d225d1e5904a7a44c49f9d9d138fe6c2159c2c59afb95bc8cae https://codeload.github.com/koodo-reader/koodo-reader/tar.gz/refs/tags/v2.4.7 /tmp/koodo.tar.gz
+RUN tar -xzf /tmp/koodo.tar.gz --strip-components=1
+COPY koodo-bookshelf.patch /tmp/koodo-bookshelf.patch
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && rm -rf /var/lib/apt/lists/* \
+    && patch -p1 < /tmp/koodo-bookshelf.patch \
+    && tar -czf /tmp/koodo-source.tar.gz . \
+    && yarn install --frozen-lockfile --ignore-scripts --non-interactive \
+    && yarn build \
+    && cp LICENSE build/LICENSE \
+    && mv /tmp/koodo-source.tar.gz build/koodo-source.tar.gz \
+    && test -s build/index.html
+
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -40,11 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制全部应用源码与预编译好的 Koodo Reader 静态站点
+# 复制应用和官方 Koodo Web 构建产物
 COPY . /app/
-
-# 确保目标目录存在
-RUN mkdir -p /app/koodo_reader
+COPY --from=koodo-web /koodo-src/build/ /app/koodo_reader/
 
 RUN chmod +x /app/entrypoint.sh
 

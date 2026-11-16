@@ -9,6 +9,7 @@ __pycache__/
 build/
 dist/
 .deps/
+koodo_reader/
 tcl/
 test_*.py
 patch_*.py
