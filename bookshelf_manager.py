@@ -261,7 +261,7 @@ def scan_book_folder(folder_path):
 def scan_library(library_dir):
     """扫描整个书库目录，返回所有书籍列表"""
     books = []
-    if not os.path.exists(library_dir) or not os.path.isdir(library_dir):
+    if not library_dir or not os.path.isdir(library_dir):
         return books
 
     try:
@@ -309,6 +309,38 @@ def scan_library(library_dir):
     books.sort(key=lambda x: x.title.lower())
     return books
 
+def index_library_files(library_dir, database, *, write=True, refresh_metadata=False, stop_event=None):
+    """Index existing files and return the hashes seen in the target library."""
+    hashes = {}
+    indexed = 0
+    failed = 0
+    known_files = database.file_hashes()
+    for book in scan_library(library_dir):
+        if stop_event is not None and stop_event.is_set():
+            break
+        for path in book.all_files:
+            if stop_event is not None and stop_event.is_set():
+                break
+            path = os.path.abspath(path)
+            try:
+                info = os.stat(path)
+                known = known_files.get(path)
+                cached = known and known[:2] == (info.st_size, info.st_mtime_ns) and known[2]
+                digest = cached or database.calculate_file_hash(path)
+                if not digest:
+                    failed += 1
+                    continue
+                hashes[digest] = (path, info.st_size, info.st_mtime_ns)
+                if write and database.enabled and (not cached or refresh_metadata):
+                    if not database.record_file(path, book.to_dict(), digest=digest, cover=book.cover_path, stat=info):
+                        failed += 1
+                        continue
+                indexed += 1
+            except OSError:
+                failed += 1
+    return hashes, indexed, failed
+
+
 def open_book_file(file_path):
     """调用系统默认程序打开图书文件进行阅读"""
     if not file_path or not os.path.exists(file_path):
@@ -336,13 +368,14 @@ def open_folder_in_explorer(folder_path, highlight_file=None):
             pass
     return False
 
-def delete_book_item(book_item):
+def delete_book_item(book_item, library_dir=None):
     """从书库中删除图书及其目录文件"""
     if not book_item:
         return False, "无效图书"
     try:
         folder = book_item.folder_path
-        if os.path.isdir(folder) and os.path.basename(folder):
+        if (os.path.isdir(folder) and os.path.basename(folder)
+                and (library_dir is None or os.path.abspath(folder) != os.path.abspath(library_dir))):
             shutil.rmtree(folder)
             return True, "已成功删除图书目录"
         elif book_item.file_path and os.path.exists(book_item.file_path):

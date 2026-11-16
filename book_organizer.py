@@ -15,6 +15,8 @@ Book Organizer - 智能图书整理工具
 import os
 import sys
 import threading
+from db_manager import db
+from bookshelf_manager import index_library_files
 
 # 修复打包环境下 ssl 缺少 codex-rejected-cas.pem 导致的 [Errno 2] 崩溃
 try:
@@ -129,6 +131,9 @@ class BookOrganizer:
 
         self.threads = max(2, min(20, int(threads or 4)))
         self.lock = threading.Lock()
+        self.file_condition = threading.Condition()
+        self.pending_hashes = set()
+        self.indexed_hashes = {}
         self.processed_counter = 0
 
         self.stats = {
@@ -136,6 +141,7 @@ class BookOrganizer:
             'organized': [],
             'skipped_collections': [],
             'skipped_no_isbn': [],
+            'skipped_duplicates': [],
             'errors': []
         }
 
@@ -150,7 +156,9 @@ class BookOrganizer:
     def notify_stats(self):
         if self.stats_callback:
             try:
-                with self.lock: st = {'total_scanned': self.stats['total_scanned'], 'organized': list(self.stats['organized']), 'skipped_collections': list(self.stats['skipped_collections']), 'skipped_no_isbn': list(self.stats['skipped_no_isbn']), 'errors': list(self.stats['errors'])}; self.stats_callback(st)
+                with self.lock:
+                    snapshot = {key: list(value) if isinstance(value, list) else value for key, value in self.stats.items()}
+                self.stats_callback(snapshot)
             except Exception:
                 pass
 
@@ -165,6 +173,7 @@ class BookOrganizer:
             f"【{mode}】\n"
             f"待处理扫描总数: {tot} 本\n"
             f"成功整理入库: {org} 本\n"
+            f"跳过重复文件: {len(self.stats['skipped_duplicates'])} 本\n"
             f"跳过无ISBN合集: {col} 本\n"
             f"跳过无出版ISBN: {no_isbn} 本\n"
             f"发生处理异常: {err} 本"
@@ -204,6 +213,12 @@ class BookOrganizer:
             self.log(f"已设置处理数量限制: 前 {limit} 本图书。", 'info')
 
         total_files = len(book_files)
+        if total_files:
+            self.log("正在核对目标书库中的已有文件…", "info")
+            self.indexed_hashes, indexed, failed = index_library_files(
+                self.dst_dir, db, write=not self.dry_run, stop_event=self.stop_event,
+            )
+            self.log(f"已核对 {indexed} 个书库文件。" + (f"另有 {failed} 个文件未能索引。" if failed else ""), "info")
         self.processed_counter = 0
         self.log(f"并发模式:       启动 {self.threads} 个工作线程并发处理 (范围2-20)", "info")
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -245,6 +260,45 @@ class BookOrganizer:
     def process_single_book(self, file_path, filename, ext):
         if self.stop_event and self.stop_event.is_set():
             return
+        digest = db.calculate_file_hash(file_path)
+        if not digest:
+            raise OSError("无法读取图书文件以计算 SHA-256。")
+        with self.file_condition:
+            while digest in self.pending_hashes:
+                self.file_condition.wait()
+            if self.stop_event and self.stop_event.is_set():
+                return
+            self.pending_hashes.add(digest)
+        try:
+            indexed = self.indexed_hashes.get(digest)
+            existing_path = None
+            if indexed:
+                path, size, mtime = indexed
+                try:
+                    info = os.stat(path)
+                    if (info.st_size, info.st_mtime_ns) == (size, mtime):
+                        existing_path = path
+                except OSError:
+                    pass
+            if not existing_path:
+                record = db.find_by_file_hash(digest)
+                existing_path = record["file_path"] if record else None
+            if existing_path:
+                self.log(f"  [跳过重复] {filename} 的文件内容与 {existing_path} 相同。", "skip")
+                with self.lock:
+                    self.stats["skipped_duplicates"].append((filename, existing_path))
+                self.notify_stats()
+                return
+            result_path = self.organize_book(file_path, filename, ext, digest)
+            if result_path:
+                info = os.stat(result_path)
+                self.indexed_hashes[digest] = (result_path, info.st_size, info.st_mtime_ns)
+        finally:
+            with self.file_condition:
+                self.pending_hashes.remove(digest)
+                self.file_condition.notify_all()
+
+    def organize_book(self, file_path, filename, ext, digest):
 
         # 1. 深入书内全文检索出版ISBN（版权页、OPF、正文等）与基础元数据
         internal_isbns = epub_handler.scan_isbns_from_file(file_path)
@@ -394,7 +448,7 @@ class BookOrganizer:
             self.log(f"    拟存放文件: {target_book_filename}, metadata.json, {safe_title}-{safe_author}.opf, cover.jpg", 'info')
             with self.lock: self.stats['organized'].append((filename, folder_name, clean_isbn))
             self.notify_stats()
-            return
+            return file_path
 
         os.makedirs(target_dir, exist_ok=True)
 
@@ -446,15 +500,22 @@ class BookOrganizer:
         # 5.4 生成 .opf 元数据文件
         opf_generator.generate_calibre_opf(meta, target_opf_path, book_filename=target_book_filename)
 
+        if db.enabled and not db.record_file(
+            target_book_path, meta, digest=digest, source=file_path, cover=target_cover_path,
+            is_collection=is_col_name,
+        ):
+            self.log("  [警告] 图书文件已入库，数据库索引写入失败，下次核对书库时会重试。", "warning")
         self.log(f"  [整理完成] 已成功规范化入库: {folder_name}", 'success')
         with self.lock: self.stats['organized'].append((filename, folder_name, clean_isbn))
         self.notify_stats()
+        return target_book_path
 
     def print_summary(self):
         self.log("=" * 65, 'heading')
         self.log("[图书整理汇总统计报告]", 'heading')
         self.log(f"扫描文件总数:       {self.stats['total_scanned']}", 'info')
         self.log(f"成功整理入库:       {len(self.stats['organized'])} 本", 'success')
+        self.log(f"跳过重复文件:       {len(self.stats['skipped_duplicates'])} 本", 'warning')
         self.log(f"跳过多书合集:       {len(self.stats['skipped_collections'])} 本", 'warning')
         self.log(f"跳过无ISBN图书:     {len(self.stats['skipped_no_isbn'])} 本", 'warning')
         self.log(f"处理发生错误:       {len(self.stats['errors'])} 本", 'error' if self.stats['errors'] else 'info')

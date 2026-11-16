@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数据库 · 图书管理</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0f172a; color: #e2e8f0; font: 15px/1.5 system-ui, sans-serif; }
+    main { width: min(1240px, 100%); margin: auto; padding: 24px; }
+    a { color: #7dd3fc; }
+    h1 { font-size: 1.65rem; margin: 14px 0; }
+    .toolbar, form, nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .toolbar { justify-content: space-between; }
+    input, button { border: 1px solid #475569; border-radius: 6px; padding: 7px 12px; color: inherit; font: inherit; }
+    input { width: min(320px, 100%); background: #0f172a; }
+    button { background: #0f766e; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    .table-wrap { overflow-x: auto; border: 1px solid #334155; border-radius: 10px; }
+    table { border-collapse: collapse; width: 100%; min-width: 740px; background: #1e293b; }
+    th, td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid #334155; }
+    th { color: #cbd5e1; background: #172033; }
+    tr:last-child td { border-bottom: 0; }
+    details { max-width: 480px; }
+    summary { color: #7dd3fc; cursor: pointer; }
+    .synopsis { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .file-details { overflow-wrap: anywhere; }
+    nav { margin-top: 12px; justify-content: flex-end; }
+    [role="alert"] { color: #fda4af; }
+    @media (max-width: 640px) { main { padding: 16px; } }
+  </style>
+</head>
+<body>
+<main>
+  <a href="{{ url_for('index') }}">← 返回书架</a>
+  <h1>数据库</h1>
+  {% if error %}
+  <p role="alert">{{ error }}</p>
+  {% else %}
+  <div class="toolbar">
+    <form method="get" action="{{ url_for('database_page') }}" role="search">
+      <input type="search" name="q" value="{{ query }}" maxlength="200"
+             aria-label="搜索数据库" placeholder="书名、作者、ISBN、简介或 SHA-256">
+      <button type="submit">搜索</button>
+      {% if query %}<a href="{{ url_for('database_page') }}">清除</a>{% endif %}
+    </form>
+    <button id="indexBooks" type="button">索引现有书架</button>
+  </div>
+  <p id="indexStatus" role="status">
+    {% if index_status.state == "finished" %}
+    已核对 {{ index_status.count }} 个文件{% if index_status.failed %}，{{ index_status.failed }} 个索引失败{% endif %}。
+    {% elif index_status.state == "failed" %}
+    {{ index_status.error }}
+    {% endif %}
+  </p>
+  <p>{{ total }} 条{% if query %}匹配{% endif %}记录</p>
+  {% if books %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th scope="col">书名 / 简介</th><th scope="col">作者</th><th scope="col">ISBN</th><th scope="col">出版社</th><th scope="col">文件</th></tr></thead>
+      <tbody>
+        {% for book in books %}
+        <tr>
+          <td>
+            <strong>{{ book.title }}</strong>
+            {% if book.description %}
+            <details><summary>简介</summary><div class="synopsis">{{ book.description }}</div></details>
+            {% endif %}
+          </td>
+          <td>{{ book.author or '—' }}</td>
+          <td>{{ book.isbn or '—' }}</td>
+          <td>{{ book.publisher or '—' }}</td>
+          <td>
+            <details class="file-details">
+              <summary>{{ book.file_name or '文件详情' }}</summary>
+              <div>{{ book.file_path or '无路径' }}</div>
+              {% if book.file_hash %}<div>SHA-256 {{ book.file_hash }}</div>{% endif %}
+              {% if book.file_size is not none %}<div>{{ '{:,}'.format(book.file_size) }} 字节</div>{% endif %}
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p>{% if query %}没有匹配的记录。{% else %}当前没有图书记录，可以先索引现有书架。{% endif %}</p>
+  {% endif %}
+  {% if pages > 1 %}
+  <nav aria-label="分页">
+    {% if page > 1 %}<a href="{{ url_for('database_page', q=query, page=page - 1) }}">上一页</a>{% endif %}
+    <span>{{ page }} / {{ pages }}</span>
+    {% if page < pages %}<a href="{{ url_for('database_page', q=query, page=page + 1) }}">下一页</a>{% endif %}
+  </nav>
+  {% endif %}
+  <script>
+    const button = document.getElementById('indexBooks');
+    const status = document.getElementById('indexStatus');
+    const indexUrl = {{ url_for('api_database_index') | tojson }};
+    async function watchIndex(start) {
+      button.disabled = true;
+      status.textContent = '正在核对文件并写入数据库…';
+      try {
+        if (start) {
+          const response = await fetch(indexUrl, {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+          });
+          if (!response.ok) throw new Error((await response.json()).error);
+        }
+        while (true) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const response = await fetch(indexUrl, {cache: 'no-store'});
+          if (!response.ok) throw new Error('无法读取索引进度。');
+          const data = await response.json();
+          if (data.state === 'finished') {
+            location.reload();
+            return;
+          }
+          if (data.state !== 'indexing') throw new Error(data.error || '索引任务已中断。');
+        }
+      } catch (error) {
+        status.textContent = error.message;
+        button.disabled = false;
+      }
+    }
+    button.onclick = () => watchIndex(true);
+    {% if index_status.state == "indexing" %}watchIndex(false);{% endif %}
+  </script>
+  {% endif %}
+</main>
+</body>
+</html>

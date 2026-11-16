@@ -28,14 +28,17 @@ class DatabaseManager:
 
     def _init_pool(self):
         try:
-            self.pool = psycopg2.pool.SimpleConnectionPool(
-                minconn=1, maxconn=15,
+            self.pool = pool.ThreadedConnectionPool(
+                minconn=1, maxconn=24,
                 host=self.host, port=self.port,
                 user=self.user, password=self.password,
                 database=self.dbname, connect_timeout=5
             )
             self.enabled = True
-            self.create_tables()
+            if not self.create_tables():
+                self.pool.closeall()
+                self.enabled = False
+                return
             logger.info("✅ 成功连接内置 PostgreSQL 数据库")
         except Exception as e:
             self.enabled = False
@@ -69,18 +72,23 @@ class DatabaseManager:
                     file_name VARCHAR(255),
                     file_size BIGINT,
                     file_hash VARCHAR(64),
+                    file_mtime_ns BIGINT,
                     source_path VARCHAR(1000),
                     is_collection BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
+                ALTER TABLE books ADD COLUMN IF NOT EXISTS file_mtime_ns BIGINT;
                 CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);
                 CREATE INDEX IF NOT EXISTS idx_books_file_hash ON books(file_hash);
                 CREATE INDEX IF NOT EXISTS idx_books_title_author ON books(title, author);
                 """)
                 conn.commit()
+                return True
         except Exception:
             conn.rollback()
+            logger.exception("Unable to initialize the books table")
+            return False
         finally:
             self.release_conn(conn)
 
@@ -105,8 +113,15 @@ class DatabaseManager:
             return None
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM books WHERE file_hash = %s LIMIT 1", (file_hash,))
-                return cur.fetchone()
+                cur.execute(
+                    "SELECT file_path, file_size, file_mtime_ns, file_hash "
+                    "FROM books WHERE file_hash = %s ORDER BY id DESC",
+                    (file_hash,),
+                )
+                for row in cur.fetchall():
+                    if self.is_current_file(row):
+                        return row
+            return None
         finally:
             self.release_conn(conn)
 
@@ -135,11 +150,11 @@ class DatabaseManager:
                 cur.execute("""
                 INSERT INTO books (
                     isbn, title, author, publisher, pub_year, description, rating,
-                    tags, cover_path, file_path, file_name, file_size, file_hash,
+                    tags, cover_path, file_path, file_name, file_size, file_hash, file_mtime_ns,
                     source_path, is_collection, updated_at
                 ) VALUES (
                     %(isbn)s, %(title)s, %(author)s, %(publisher)s, %(pub_year)s, %(description)s, %(rating)s,
-                    %(tags)s, %(cover_path)s, %(file_path)s, %(file_name)s, %(file_size)s, %(file_hash)s,
+                    %(tags)s, %(cover_path)s, %(file_path)s, %(file_name)s, %(file_size)s, %(file_hash)s, %(file_mtime_ns)s,
                     %(source_path)s, %(is_collection)s, CURRENT_TIMESTAMP
                 )
                 ON CONFLICT (file_path) DO UPDATE SET
@@ -149,17 +164,103 @@ class DatabaseManager:
                     publisher = EXCLUDED.publisher,
                     pub_year = EXCLUDED.pub_year,
                     description = EXCLUDED.description,
+                    rating = COALESCE(EXCLUDED.rating, books.rating),
+                    tags = EXCLUDED.tags,
                     cover_path = EXCLUDED.cover_path,
                     file_size = EXCLUDED.file_size,
                     file_hash = EXCLUDED.file_hash,
+                    file_mtime_ns = EXCLUDED.file_mtime_ns,
+                    source_path = COALESCE(EXCLUDED.source_path, books.source_path),
+                    is_collection = EXCLUDED.is_collection,
                     updated_at = CURRENT_TIMESTAMP;
                 """, data)
                 conn.commit()
                 return True
         except Exception:
             conn.rollback()
+            logger.exception("Unable to index book in PostgreSQL")
             return False
         finally:
             self.release_conn(conn)
+
+    def is_current_file(self, row):
+        path = row.get("file_path")
+        if not path:
+            return False
+        try:
+            info = os.stat(path)
+        except OSError:
+            return False
+        if info.st_size != row.get("file_size"):
+            return False
+        recorded_mtime = row.get("file_mtime_ns")
+        if recorded_mtime == info.st_mtime_ns:
+            return True
+        return self.calculate_file_hash(path) == row.get("file_hash")
+
+    def file_hashes(self):
+        conn = self.get_conn()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT file_path, file_size, file_mtime_ns, file_hash FROM books")
+                return {path: (size, mtime, digest) for path, size, mtime, digest in cur.fetchall()}
+        finally:
+            self.release_conn(conn)
+
+    def record_file(self, path, meta, *, digest=None, source=None, cover=None, is_collection=False,
+                    stat=None):
+        if not self.enabled:
+            return False
+        path = os.path.abspath(path)
+        stat = stat or os.stat(path)
+        digest = digest or self.calculate_file_hash(path)
+        if not digest:
+            return False
+        return self.upsert_book({
+            "isbn": (meta.get("isbn") or "").replace("-", "").strip()[:32],
+            "title": (meta.get("title") or os.path.basename(path))[:255],
+            "author": (meta.get("author") or "")[:255],
+            "publisher": (meta.get("publisher") or "")[:255],
+            "pub_year": (meta.get("pubdate") or "")[:32],
+            "description": meta.get("description") or "",
+            "rating": meta.get("rating"),
+            "tags": str(meta.get("tags") or ""),
+            "cover_path": cover, "file_path": path, "file_name": os.path.basename(path),
+            "file_size": stat.st_size, "file_hash": digest, "file_mtime_ns": stat.st_mtime_ns,
+            "source_path": source, "is_collection": is_collection,
+        })
+
+    def search_books(self, query, page, page_size):
+        conn = self.get_conn()
+        if not conn:
+            raise RuntimeError("Database not connected")
+        where = """WHERE strpos(lower(concat_ws(' ', title, author, isbn, publisher,
+            description, file_name, file_hash)), lower(%s)) > 0"""
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT count(*) AS total FROM books " + where, (query,))
+                total = cur.fetchone()["total"]
+                page = max(1, min(page, (total + page_size - 1) // page_size))
+                cur.execute(
+                    "SELECT * FROM books " + where + " ORDER BY id DESC LIMIT %s OFFSET %s",
+                    (query, page_size, (page - 1) * page_size),
+                )
+                return cur.fetchall(), total, page
+        finally:
+            self.release_conn(conn)
+
+    def delete_files(self, paths):
+        conn = self.get_conn()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM books WHERE file_path = ANY(%s)", (paths,))
+            conn.commit()
+        finally:
+            self.release_conn(conn)
+
 
 db = DatabaseManager()

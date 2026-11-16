@@ -31,6 +31,7 @@ import config
 import bookshelf_manager
 import book_organizer
 import hot_update
+from db_manager import db
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -83,7 +84,7 @@ class TaskManager:
         self.logs = []
         self.max_logs = 1000
         self.progress = {"current": 0, "total": 0, "percent": 0, "filename": ""}
-        self.stats = {"total": 0, "organized": 0, "col_skip": 0, "no_isbn": 0, "error": 0}
+        self.stats = {"total": 0, "organized": 0, "col_skip": 0, "no_isbn": 0, "duplicate": 0, "error": 0}
         self.status_text = "就绪状态：等待开始"
         self.last_summary = ""
         self.finished = False
@@ -91,7 +92,7 @@ class TaskManager:
     def clear(self):
         self.logs.clear()
         self.progress = {"current": 0, "total": 0, "percent": 0, "filename": ""}
-        self.stats = {"total": 0, "organized": 0, "col_skip": 0, "no_isbn": 0, "error": 0}
+        self.stats = {"total": 0, "organized": 0, "col_skip": 0, "no_isbn": 0, "duplicate": 0, "error": 0}
         self.status_text = "就绪状态：等待开始"
         self.last_summary = ""
         self.finished = False
@@ -104,6 +105,7 @@ class TaskManager:
 
 task_manager = TaskManager()
 update_status = {"state": "idle"}
+database_index_status = {"state": "idle"}
 
 def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run, threads=4, sources=None):
     task_manager.is_running = True
@@ -130,6 +132,7 @@ def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run, th
                 'organized': len(s_dict.get('organized', [])),
                 'col_skip': len(s_dict.get('skipped_collections', [])),
                 'no_isbn': len(s_dict.get('skipped_no_isbn', [])),
+                'duplicate': len(s_dict.get('skipped_duplicates', [])),
                 'error': len(s_dict.get('errors', []))
             }
 
@@ -277,8 +280,20 @@ def api_edit_metadata(book_idx):
     books = bookshelf_manager.scan_library(lib_dir)
     if 0 <= book_idx < len(books):
         b = books[book_idx]
-        new_meta = request.json or {}
+        allowed = {"title", "author", "isbn", "publisher", "pubdate", "description"}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or any(
+            key not in allowed or not isinstance(value, str) for key, value in data.items()
+        ):
+            return jsonify(success=False, message="图书元数据格式无效。"), 400
+        new_meta = data
         succ, msg = bookshelf_manager.update_book_metadata(b, new_meta)
+        if succ and db.enabled:
+            try:
+                for path in b.all_files:
+                    db.record_file(path, b.to_dict(), cover=b.cover_path)
+            except Exception:
+                app.logger.exception("Unable to refresh database metadata")
         return jsonify({"success": succ, "message": msg})
     return jsonify({"success": False, "message": "图书不存在"}), 404
 
@@ -289,9 +304,69 @@ def api_delete_book(book_idx):
     books = bookshelf_manager.scan_library(lib_dir)
     if 0 <= book_idx < len(books):
         b = books[book_idx]
-        succ, msg = bookshelf_manager.delete_book_item(b)
+        succ, msg = bookshelf_manager.delete_book_item(b, library_dir=lib_dir)
+        if succ and db.enabled:
+            try:
+                db.delete_files([os.path.abspath(path) for path in b.all_files])
+            except Exception:
+                app.logger.exception("Unable to remove deleted book from database")
         return jsonify({"success": succ, "message": msg})
     return jsonify({"success": False, "message": "图书不存在"}), 404
+
+@app.get("/database")
+def database_page():
+    query = request.args.get("q", "").strip()[:200]
+    page = request.args.get("page", default=1, type=int)
+    books, total, page, error = [], 0, max(page, 1), ""
+    page_size = 30
+    try:
+        books, total, page = db.search_books(query, page, page_size)
+        for book in books:
+            book["description"] = bookshelf_manager.clean_html_tags(book["description"])
+    except Exception:
+        if db.enabled:
+            app.logger.exception("Unable to query the books table")
+        error = "无法连接 PostgreSQL，请检查容器的数据库状态。"
+    return render_template(
+        "database_books.html", books=books, total=total, query=query, page=page,
+        pages=max(1, (total + page_size - 1) // page_size), error=error,
+        index_status=database_index_status,
+    )
+
+
+@app.route("/api/database/index", methods=["GET", "POST"])
+def api_database_index():
+    if request.method == "GET":
+        return jsonify(database_index_status)
+    if not request.is_json:
+        return jsonify(error="请求格式无效。"), 400
+    if not db.enabled:
+        return jsonify(error="PostgreSQL 未连接。"), 503
+    settings = load_settings()
+    library = settings.get("bookshelf_dir") or settings.get("dst")
+    if not library or not os.path.isdir(library):
+        return jsonify(error="当前书库目录不可用。"), 400
+
+    def index_worker():
+        try:
+            _, count, failed = bookshelf_manager.index_library_files(library, db, refresh_metadata=True)
+            database_index_status.update(state="finished", count=count, failed=failed)
+        except Exception:
+            app.logger.exception("Unable to index the bookshelf")
+            database_index_status.update(state="failed", error="书库索引失败，请检查容器日志。")
+
+    with task_manager.start_lock:
+        if (task_manager.is_running or update_status["state"] == "installing"
+                or database_index_status["state"] == "indexing"):
+            return jsonify(error="请等当前任务结束后再索引书架。"), 409
+        database_index_status.update(state="indexing")
+        try:
+            threading.Thread(target=index_worker, daemon=True).start()
+        except RuntimeError:
+            database_index_status.update(state="failed", error="无法启动索引任务。")
+            return jsonify(error=database_index_status["error"]), 500
+    return jsonify(state="indexing"), 202
+
 
 @app.route("/plugins", methods=["GET", "POST"])
 def manage_plugins():
@@ -368,8 +443,8 @@ def api_organize_start():
         return jsonify(success=False, message="请检查目标书库目录和整理方式。"), 400
 
     with task_manager.start_lock:
-        if update_status["state"] == "installing":
-            return jsonify(success=False, message="系统正在热更新，请稍后再启动整理。"), 409
+        if update_status["state"] == "installing" or database_index_status["state"] == "indexing":
+            return jsonify(success=False, message="系统正在更新或索引书库，请稍后再启动整理。"), 409
         if task_manager.is_running:
             return jsonify(success=False, message="已有任务正在执行中！"), 409
         settings = load_settings()
@@ -731,7 +806,7 @@ header {
   outline: none;
 }
 .form-input:focus { border-color: var(--accent-cyan); }
-.stats-cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 14px; }
+.stats-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .stat-box {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -779,6 +854,7 @@ header {
     <button class="nav-tab active" onclick="switchMainTab('shelf')">🖼️ 我的书架</button>
     <button class="nav-tab" onclick="switchMainTab('organize')">⚙️ 图书整理</button>
     <a class="nav-tab" href="{{ url_for('manage_plugins') }}">数据源插件</a>
+    <a class="nav-tab" href="{{ url_for('database_page') }}">数据库</a>
   </div>
 </header>
 
@@ -883,6 +959,7 @@ header {
         <div class="stat-box"><div class="stat-val" style="color: var(--accent-green);" id="statOrganized">0</div><div class="stat-lbl">成功整理入库</div></div>
         <div class="stat-box"><div class="stat-val" style="color: var(--warning);" id="statColSkip">0</div><div class="stat-lbl">无ISBN合集跳过</div></div>
         <div class="stat-box"><div class="stat-val" style="color: var(--text-secondary);" id="statNoIsbn">0</div><div class="stat-lbl">无出版ISBN跳过</div></div>
+        <div class="stat-box"><div class="stat-val" style="color: var(--text-secondary);" id="statDuplicate">0</div><div class="stat-lbl">重复文件跳过</div></div>
         <div class="stat-box"><div class="stat-val" style="color: var(--danger);" id="statError">0</div><div class="stat-lbl">发生处理异常</div></div>
       </div>
 
@@ -1168,6 +1245,7 @@ function startPolling() {
       document.getElementById('statOrganized').textContent = data.stats.organized;
       document.getElementById('statColSkip').textContent = data.stats.col_skip;
       document.getElementById('statNoIsbn').textContent = data.stats.no_isbn;
+      document.getElementById('statDuplicate').textContent = data.stats.duplicate;
       document.getElementById('statError').textContent = data.stats.error;
 
       // 日志渲染
@@ -1454,7 +1532,8 @@ def api_hot_update():
         os._exit(hot_update.RESTART)
 
     with task_manager.start_lock:
-        if task_manager.is_running or update_status["state"] == "installing":
+        if (task_manager.is_running or update_status["state"] == "installing"
+                or database_index_status["state"] == "indexing"):
             return jsonify(success=False, error="请等当前整理或更新任务结束后重试。"), 409
         update_status.update(state="installing", error="")
         try:
