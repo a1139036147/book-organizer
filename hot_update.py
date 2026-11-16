@@ -55,6 +55,9 @@ def latest_release():
 
 def github_release():
     request = Request(PUBLISHED_RUNS, headers={"Accept": "application/vnd.github+json"})
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
     with urlopen(request, timeout=10) as response:
         runs = json.load(response)["workflow_runs"]
     if not runs:

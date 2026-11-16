@@ -65,6 +65,12 @@ docker-compose logs -f
 启动后，在局域网内任意设备的浏览器中打开：
 👉 **`http://<您的NAS或服务器IP>:14808`** 即可直接使用！
 
+#### 为网页版本检查配置 GitHub Token（可选）
+
+在 Compose 文件同目录的 `.env` 中填写 `GITHUB_TOKEN=你的令牌`。如使用自行维护的 Compose 文件，在服务的 `environment` 下加入 `GITHUB_TOKEN: ${GITHUB_TOKEN:-}`。保存后执行 `docker compose up -d --force-recreate book-organizer`，再点击网页左下角的版本号检查更新。
+
+令牌用于 GitHub 发布版本查询。GitHub 查询失败时，程序会改查 Docker Hub。
+
 ---
 
 ### 方式 B：Docker 单行命令启动

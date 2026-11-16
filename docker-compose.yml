@@ -5,6 +5,8 @@ services:
     image: arros/book-organizer:latest
     container_name: book-organizer
     restart: unless-stopped
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     ports:
       - "14808:14808"
     volumes:

@@ -11,6 +11,7 @@ dist/
 .deps/
 koodo_reader/
 plugins_config.json
+.env
 tcl/
 test_*.py
 patch_*.py
