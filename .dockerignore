@@ -10,6 +10,7 @@ build/
 dist/
 .deps/
 koodo_reader/
+plugins_config.json
 tcl/
 test_*.py
 patch_*.py

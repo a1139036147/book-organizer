@@ -1,4 +1,4 @@
-from plugins_manager import plugin_manager
+from plugins_manager import SOURCES, plugin_manager
 
 from version import APP_VERSION, BUILD_DATE, FEATURES
 # -*- coding: utf-8 -*-
@@ -16,6 +16,7 @@ import time
 import queue
 import threading
 import mimetypes
+import math
 from hashlib import sha256
 import urllib.parse
 from io import BytesIO
@@ -74,6 +75,7 @@ def save_settings(data):
 class TaskManager:
     def __init__(self):
         self.is_running = False
+        self.start_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.worker = None
         self.msg_queue = queue.Queue()
@@ -101,7 +103,7 @@ class TaskManager:
 
 task_manager = TaskManager()
 
-def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run, threads=4):
+def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run, threads=4, sources=None):
     task_manager.is_running = True
     task_manager.finished = False
     task_manager.status_text = "正在执行整理任务..."
@@ -140,6 +142,7 @@ def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run, th
             google_api_key=key,
             dry_run=dry_run,
             threads=threads,
+            sources=sources,
             reporter=reporter,
             stop_event=task_manager.stop_event
         )
@@ -164,7 +167,9 @@ def api_settings():
         data = request.json or {}
         save_settings(data)
         return jsonify({"success": True, "settings": data})
-    return jsonify(load_settings())
+    settings = load_settings()
+    settings.pop("google_key", None)
+    return jsonify(settings)
 
 @app.route('/api/shelf', methods=['GET'])
 def api_shelf():
@@ -286,50 +291,109 @@ def api_delete_book(book_idx):
         return jsonify({"success": succ, "message": msg})
     return jsonify({"success": False, "message": "图书不存在"}), 404
 
+@app.route("/plugins", methods=["GET", "POST"])
+def manage_plugins():
+    status = ""
+    error = False
+    if request.method == "POST":
+        source_id = request.form.get("source")
+        if source_id not in SOURCES:
+            abort(400, "未知数据源")
+        try:
+            priority = int(request.form.get("priority", ""))
+            if not 1 <= priority <= 999:
+                raise ValueError()
+            fields = {}
+            for key in SOURCES[source_id][1]:
+                value = request.form.get(key, "").strip()
+                if "\r" in value or "\n" in value:
+                    raise ValueError()
+                if value or key == "user_agent":
+                    fields[key] = value
+                elif request.form.get("clear_" + key):
+                    fields[key] = ""
+            plugin_manager.update(source_id, "enabled" in request.form, priority, fields)
+            if source_id == "google_books" and "api_key" in fields:
+                settings = load_settings()
+                settings.pop("google_key", None)
+                save_settings(settings)
+            status = f"{SOURCES[source_id][0]} 已保存"
+        except ValueError:
+            status, error = "优先级须为 1–999 的整数。凭证与 User-Agent 须为单行。", True
+        except OSError:
+            status, error = "无法写入插件配置，请检查配置目录权限。", True
+    sources = plugin_manager.list()
+    if load_settings().get("google_key"):
+        google = next(source for source in sources if source["id"] == "google_books")
+        google["fields"][0]["configured"] = True
+    return render_template("scraper_plugins.html", sources=sources, status=status, error=error), (400 if error else 200)
+
+
 @app.route('/api/organize/start', methods=['POST'])
 def api_organize_start():
-    if task_manager.is_running:
-        return jsonify({"success": False, "message": "已有任务正在执行中！"})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message="请求格式无效。"), 400
 
-    data = request.json or {}
-    src = data.get('src', '').strip()
-    dst = data.get('dst', '').strip()
-    action = data.get('action', 'copy')
-    skip_col = bool(data.get('skip_collections', True))
-    dry_run = bool(data.get('dry_run', False))
-    limit_val = int(data.get('limit')) if data.get('limit') else None
-    delay_val = float(data.get('delay', 1.2))
-    key_val = data.get('google_key', '').strip() or None
-    threads_val = max(2, min(20, int(data.get('threads', 4))))
+    src = data.get("src", "")
+    dst = data.get("dst", "")
+    if not isinstance(src, str) or not isinstance(dst, str):
+        return jsonify(success=False, message="目录必须是有效路径。"), 400
+    src, dst = src.strip(), dst.strip()
+    action = data.get("action", "copy")
+    skip_col = bool(data.get("skip_collections", True))
+    dry_run = bool(data.get("dry_run", False))
+    sources = data.get("sources")
+    try:
+        limit = int(data["limit"]) if data.get("limit") else None
+        delay = float(data.get("delay", 1.2))
+        threads = int(data.get("threads", 4))
+        if not 2 <= threads <= 20 or not math.isfinite(delay) or delay < 0 or (limit is not None and limit < 1):
+            raise ValueError()
+    except (TypeError, ValueError, OverflowError):
+        return jsonify(success=False, message="线程数须为 2–20，延时不能为负，数量限制须为正整数。"), 400
 
-    if not src or not os.path.exists(src):
-        return jsonify({"success": False, "message": f"待整理源目录不存在: {src}"})
-    if not dst:
-        return jsonify({"success": False, "message": "未指定目标书库目录！"})
+    if sources is not None and (
+        not isinstance(sources, list) or
+        any(not isinstance(source, str) or source not in SOURCES for source in sources)
+    ):
+        return jsonify(success=False, message="刮削源选择无效。"), 400
+    if not plugin_manager.enabled_sources(sources):
+        return jsonify(success=False, message="请至少选择一个已启用的刮削源。"), 400
+    if not src or not os.path.isdir(src):
+        return jsonify(success=False, message=f"待整理源目录不存在: {src}"), 400
+    if not dst or action not in ("copy", "move"):
+        return jsonify(success=False, message="请检查目标书库目录和整理方式。"), 400
 
-    task_manager.clear()
-    task_manager.stop_event.clear()
+    with task_manager.start_lock:
+        if task_manager.is_running:
+            return jsonify(success=False, message="已有任务正在执行中！"), 409
+        settings = load_settings()
+        legacy_key = data.get("google_key", settings.get("google_key")) or None
+        settings.update(src=src, dst=dst, action=action, skip_collections=skip_col,
+                        delay=str(delay), limit=str(limit or ""), threads=threads, sources=sources)
+        if "google_key" in data:
+            settings["google_key"] = legacy_key or ""
+        if not save_settings(settings):
+            return jsonify(success=False, message="保存整理设置失败，请检查配置目录权限。"), 500
 
-    # 保存配置
-    settings = load_settings()
-    settings.update({
-        "src": src, "dst": dst, "action": action,
-        "skip_collections": skip_col, "delay": str(delay_val),
-        "google_key": key_val or "", "limit": str(limit_val or "")
-    })
-    save_settings(settings)
+        task_manager.clear()
+        task_manager.stop_event.clear()
+        task_manager.is_running = True
+        description = "预演测试" if dry_run else f"正式入库 ({action}模式)"
+        task_manager.add_log(f"任务启动: {description} | 源目录: {src} -> 目标库: {dst}", "heading")
+        task_manager.worker = threading.Thread(
+            target=background_worker,
+            args=(src, dst, action, skip_col, limit, delay, legacy_key, dry_run, threads, sources),
+            daemon=True,
+        )
+        try:
+            task_manager.worker.start()
+        except RuntimeError:
+            task_manager.is_running = False
+            return jsonify(success=False, message="无法启动整理任务，请重试。"), 500
 
-    desc = "预演测试 (Dry-Run)" if dry_run else f"正式入库 ({action}模式)"
-    task_manager.add_log(f"任务启动: {desc} | 源目录: {src} -> 目标库: {dst}", "heading")
-
-    task_manager.worker = threading.Thread(
-        target=background_worker,
-        args=(src, dst, action, skip_col, limit_val, delay_val, key_val, dry_run, threads_val),
-        daemon=True
-    )
-    task_manager.worker.start()
-
-    return jsonify({"success": True, "message": "任务已启动"})
+    return jsonify(success=True, message="任务已启动")
 
 @app.route('/api/organize/stop', methods=['POST'])
 def api_organize_stop():
@@ -383,6 +447,8 @@ INDEX_HTML = """<!DOCTYPE html>
   --warning: #f59e0b;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html { scrollbar-gutter: stable; }
+html:has(.modal-overlay.open) { overflow: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
   background-color: var(--bg-app);
@@ -404,6 +470,12 @@ header {
 .logo-box { display: flex; flex-direction: column; }
 .logo-title { font-size: 1.15rem; font-weight: 700; color: var(--accent-cyan); letter-spacing: 0.5px; }
 .logo-sub { font-size: 0.78rem; color: var(--text-secondary); }
+.organize-fields {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 12px;
+}
+.organize-fields[hidden] { display: none; }
+.organize-fields .form-input { display: block; width: 100%; margin-top: 5px; }
+.nav-tabs a { text-decoration: none; }
 .nav-tabs { display: flex; gap: 8px; }
 .nav-tab {
   padding: 8px 18px;
@@ -575,6 +647,7 @@ header {
   width: 90%;
   max-height: 85vh;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   box-shadow: 0 10px 30px rgba(0,0,0,0.6);
   padding: 24px;
   position: relative;
@@ -700,6 +773,7 @@ header {
   <div class="nav-tabs">
     <button class="nav-tab active" onclick="switchMainTab('shelf')">🖼️ 我的书架</button>
     <button class="nav-tab" onclick="switchMainTab('organize')">⚙️ 图书整理</button>
+    <a class="nav-tab" href="{{ url_for('manage_plugins') }}">数据源插件</a>
   </div>
 </header>
 
@@ -760,16 +834,25 @@ header {
         <div class="form-label">合集过滤规则:</div>
         <label style="color: var(--accent-cyan); cursor: pointer;"><input type="checkbox" id="orgSkipCol" checked> 遇到多本拼凑合集，若无出版ISBN则自动跳过不整理</label>
       </div>
+      <div class="organize-fields">
+        <label>请求间隔（秒）<input type="number" id="orgDelay" class="form-input" value="1.2" min="0" step="0.1"></label>
+        <label>数量限制<input type="number" id="orgLimit" class="form-input" min="1" placeholder="不限"></label>
+        <label>并发线程（2–20）<input type="number" id="orgThreads" class="form-input" value="4" min="2" max="20"></label>
+      </div>
+    </div>
+
+    <div class="card-section">
+      <div class="card-sec-title">刮削数据源</div>
       <div class="form-row">
-        <div class="form-label">请求延时与密钥:</div>
-        <span style="font-size:0.85rem; color:var(--text-secondary);">延时(秒):</span>
-        <input type="number" id="orgDelay" class="form-input" value="1.2" style="max-width: 80px;" step="0.1">
-        <span style="font-size:0.85rem; color:var(--text-secondary); margin-left:14px;">数量限制:</span>
-        <input type="number" id="orgLimit" class="form-input" placeholder="不限" style="max-width: 90px;">
-        <span style="font-size:0.85rem; color:var(--text-secondary); margin-left:14px;">Google Key:</span>
-        <input type="text" id="orgGoogleKey" class="form-input" placeholder="选填 (国内当当/豆瓣免Key全覆盖)">
-        <span style="font-size:0.85rem; color:var(--text-secondary); margin-left:14px;">并发线程(2-20):</span>
-        <input type="number" id="orgThreads" class="form-input" value="4" min="2" max="20" style="max-width: 70px;">
+        <label><input type="checkbox" id="orgAllSources" checked onchange="updateSourceSelection()"> 使用全部已启用数据源</label>
+        <a href="{{ url_for('manage_plugins') }}" style="color: var(--accent-cyan);">管理数据源插件</a>
+      </div>
+      <div id="orgSourceOptions" class="organize-fields" hidden>
+        {% for source in sources %}
+        <label><input type="checkbox" name="orgSource" value="{{ source.id }}" {% if not source.enabled %}disabled{% endif %}>
+          {{ source.name }}{% if not source.enabled %}（已停用）{% endif %}
+        </label>
+        {% endfor %}
       </div>
     </div>
 
@@ -780,6 +863,7 @@ header {
       <button class="btn-action btn-dark" style="margin-left: auto;" onclick="clearLogs()">🧹 清空日志</button>
     </div>
 
+    <p id="orgError" role="alert" style="color: var(--danger);"></p>
     <div class="card-section">
       <div class="progress-bar-wrapper">
         <div class="progress-fill" id="progressFill"></div>
@@ -1015,6 +1099,10 @@ function onModalDouban() {
 }
 
 // 整理任务相关交互
+function updateSourceSelection() {
+  document.getElementById('orgSourceOptions').hidden = document.getElementById('orgAllSources').checked;
+}
+
 async function startOrganize(dryRun) {
   const body = {
     src: document.getElementById('orgSrc').value.trim(),
@@ -1023,23 +1111,30 @@ async function startOrganize(dryRun) {
     skip_collections: document.getElementById('orgSkipCol').checked,
     delay: document.getElementById('orgDelay').value,
     limit: document.getElementById('orgLimit').value,
-    google_key: document.getElementById('orgGoogleKey').value.trim(),
+    sources: document.getElementById('orgAllSources').checked ? null :
+      Array.from(document.querySelectorAll('input[name="orgSource"]:checked:not(:disabled)'), input => input.value),
     threads: document.getElementById('orgThreads').value,
     dry_run: dryRun
   };
-  const res = await fetch('/api/organize/start', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  });
-  const data = await res.json();
-  if (data.success) {
-    document.getElementById('btnStart').disabled = true;
-    document.getElementById('btnDryRun').disabled = true;
+  const status = document.getElementById('statusText');
+  const buttons = ['btnStart', 'btnDryRun'].map(id => document.getElementById(id));
+  buttons.forEach(button => button.disabled = true);
+  document.getElementById('orgError').textContent = '';
+  status.textContent = '正在启动任务…';
+  try {
+    const res = await fetch('/api/organize/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message);
     document.getElementById('btnStop').disabled = false;
     startPolling();
-  } else {
-    alert(data.message);
+  } catch (error) {
+    status.textContent = '启动失败';
+    document.getElementById('orgError').textContent = error.message;
+    buttons.forEach(button => button.disabled = false);
   }
 }
 
@@ -1072,14 +1167,17 @@ function startPolling() {
 
       // 日志渲染
       const box = document.getElementById('consoleBox');
-      box.innerHTML = data.logs.map(l => {
+      box.replaceChildren(...data.logs.map(l => {
         let cls = 'log-info';
         if (l.tag === 'heading') cls = 'log-heading';
         else if (l.tag === 'success') cls = 'log-success';
         else if (l.tag === 'skip' || l.tag === 'warning') cls = 'log-skip';
         else if (l.tag === 'error') cls = 'log-error';
-        return `<div class="${cls}">[${l.time}] ${l.text}</div>`;
-      }).join('');
+        const line = document.createElement('div');
+        line.className = cls;
+        line.textContent = `[${l.time}] ${l.text}`;
+        return line;
+      }));
       box.scrollTop = box.scrollHeight;
 
       if (!data.is_running) {
@@ -1099,13 +1197,24 @@ function startPolling() {
 
 // 初始化
 document.addEventListener('DOMContentLoaded', async () => {
+  if (location.hash === '#organize') switchMainTab('organize');
   try {
     const sRes = await fetch('/api/settings');
     const settings = await sRes.json();
     if (settings.src) document.getElementById('orgSrc').value = settings.src;
     if (settings.dst) document.getElementById('orgDst').value = settings.dst;
     if (settings.delay) document.getElementById('orgDelay').value = settings.delay;
-    if (settings.google_key) document.getElementById('orgGoogleKey').value = settings.google_key;
+    document.getElementById('orgSkipCol').checked = settings.skip_collections !== false;
+    document.querySelectorAll('input[name="orgAction"]').forEach(input => {
+      input.checked = input.value === (settings.action === 'move' ? 'move' : 'copy');
+    });
+    if (Array.isArray(settings.sources)) {
+      document.getElementById('orgAllSources').checked = false;
+      document.querySelectorAll('input[name="orgSource"]').forEach(input => {
+        input.checked = settings.sources.includes(input.value);
+      });
+      updateSourceSelection();
+    }
     if (settings.threads) document.getElementById('orgThreads').value = settings.threads;
     if (settings.limit) document.getElementById('orgLimit').value = settings.limit;
   } catch (e) {}
@@ -1122,7 +1231,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 <script>
 function showVersionInfo() {
-  alert("📚 智能图书整理系统 All-in-One\n当前版本: v{{ app_version }}\n构建环境: Docker (Linux)\n内置数据库: PostgreSQL 16 (持久化于 /config/pgdata)\n阅读核心: 严格 Spine 正序 + 新标签页独立阅读");
+  alert([
+    '图书整理系统 v{{ app_version }}',
+    '内置数据库 PostgreSQL 16',
+    '在线阅读 Koodo Reader'
+  ].join(String.fromCharCode(10)));
 }
 </script>
 
@@ -1274,7 +1387,7 @@ def read_book_page(book_idx):
 
 @app.route('/')
 def index():
-    return render_template_string(INDEX_HTML, app_version=os.getenv('APP_VERSION', APP_VERSION))
+    return render_template_string(INDEX_HTML, app_version=os.getenv('APP_VERSION', APP_VERSION), sources=plugin_manager.list())
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 14808))

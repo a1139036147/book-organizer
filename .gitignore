@@ -13,6 +13,7 @@ tcl/
 
 # Personal / Local Configuration
 settings.json
+plugins_config.json
 
 # Temporary scripts & data dumps
 test_*.py

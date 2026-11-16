@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数据源插件 · 图书管理</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0f172a; color: #e2e8f0; font: 15px/1.5 system-ui, sans-serif; }
+    main { max-width: 960px; margin: auto; padding: 24px; }
+    a { color: #7dd3fc; }
+    h1 { margin: 16px 0 4px; font-size: 1.65rem; }
+    h2 { margin: 0; font-size: 1.05rem; }
+    p { margin: 4px 0 18px; color: #cbd5e1; }
+    [role="alert"] { color: #fda4af; }
+    .sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+    form { border: 1px solid #334155; border-radius: 10px; background: #1e293b; padding: 16px; display: grid; gap: 10px; align-content: start; }
+    .source-options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    input { accent-color: #2dd4bf; }
+    input:not([type="checkbox"]) { border: 1px solid #475569; border-radius: 6px; padding: 8px; background: #0f172a; color: inherit; font: inherit; }
+    input[type="number"] { width: 72px; }
+    .credential { display: grid; gap: 4px; }
+    .clear { font-size: .85rem; color: #cbd5e1; }
+    button { justify-self: start; border: 0; border-radius: 6px; background: #0f766e; color: white; padding: 7px 14px; font: inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+<main>
+  <a href="{{ url_for('index') }}#organize">← 返回图书整理</a>
+  <h1>数据源插件</h1>
+  <p>整理时按优先级从小到大查询。停用后，该数据源不会参与新任务。</p>
+  {% if status %}<p role="{{ 'alert' if error else 'status' }}">{{ status }}</p>{% endif %}
+  <div class="sources">
+    {% for source in sources %}
+    <form method="post">
+      <h2>{{ source.name }}</h2>
+      <input type="hidden" name="source" value="{{ source.id }}">
+      <div class="source-options">
+        <label><input type="checkbox" name="enabled" {% if source.enabled %}checked{% endif %}> 启用</label>
+        <label>优先级 <input type="number" name="priority" min="1" max="999" value="{{ source.priority }}" required></label>
+      </div>
+      {% for field in source.fields %}
+        <label class="credential">{{ field.label }}
+          <input type="{{ 'password' if field.secret else 'text' }}" name="{{ field.key }}" value="{{ field.value }}"
+                 placeholder="{{ '已配置，留空保留' if field.secret and field.configured else '选填' }}" autocomplete="off">
+        </label>
+        {% if field.secret and field.configured %}
+        <label class="clear"><input type="checkbox" name="clear_{{ field.key }}"> 清除已保存的 {{ field.label }}</label>
+        {% endif %}
+      {% endfor %}
+      <button type="submit">保存</button>
+    </form>
+    {% endfor %}
+  </div>
+</main>
+</body>
+</html>

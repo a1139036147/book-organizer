@@ -109,7 +109,7 @@ class OrganizerReporter:
 class BookOrganizer:
     def __init__(self, src_dir, dst_dir, action='copy', google_api_key=None, delay=config.REQUEST_DELAY,
                  skip_collections=True, dry_run=False, log_callback=None, progress_callback=None,
-                 stats_callback=None, stop_event=None, reporter=None, request_delay=None, threads=4):
+                 stats_callback=None, stop_event=None, reporter=None, request_delay=None, threads=4, sources=None):
         if request_delay is not None:
             delay = request_delay
         if reporter is not None:
@@ -125,7 +125,7 @@ class BookOrganizer:
         self.progress_callback = progress_callback
         self.stats_callback = stats_callback
         self.stop_event = stop_event
-        self.provider = metadata_provider.UnifiedMetadataProvider(google_api_key=google_api_key, delay=delay)
+        self.provider = metadata_provider.UnifiedMetadataProvider(google_api_key=google_api_key, delay=delay, sources=sources)
 
         self.threads = max(2, min(20, int(threads or 4)))
         self.lock = threading.Lock()
@@ -181,9 +181,9 @@ class BookOrganizer:
         self.log(f"操作模式:       {mode_desc}", 'info')
         self.log(f"合集策略:       书内多ISBN联网验证，正规全集/套装正常入库；无独立出版ISBN拼凑合集跳过", 'info')
         summary = self.provider.get_loaded_sources_summary()
-        ext_count = summary.get("total_external", 0)
-        ext_desc = f"已加载 {ext_count} 个外部插件 ({', '.join(summary['external'])})" if ext_count > 0 else "未放置外部插件 (已就绪热插拔)"
-        self.log(f"元数据引擎:     双轨架构 [内置: 豆瓣/微信读书/谷歌图书/OpenLibrary/Bangumi] + [Calibre插件: {ext_desc}]", "info")
+        self.log(f"刮削源顺序:     {' → '.join(self.provider.source_names.values()) or '无已启用数据源'}", "info")
+        if "calibre" in self.provider.source_names:
+            self.log(f"Calibre 插件:   {', '.join(summary['external']) or '未加载'}", "info")
         self.log("=" * 65, 'heading')
 
         if not os.path.exists(self.src_dir):
@@ -360,6 +360,10 @@ class BookOrganizer:
             with self.lock: self.stats['skipped_no_isbn'].append((filename, "未找到有效ISBN号"))
             self.notify_stats()
             return
+
+        meta = self.provider.fill_description(meta, epub_meta.get("description"))
+        if not metadata_provider.clean_html_text(meta.get("description")):
+            self.log("  -> 未找到匹配版本的书籍简介。", "info")
 
         # 5. 校验通过，进入标准组织入库流程
         safe_title = config.sanitize_filename(meta['title'])

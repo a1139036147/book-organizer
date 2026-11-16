@@ -34,18 +34,18 @@ except Exception:
     pass
 
 import http.cookiejar
-import random
-import string
 import json
 import time
 import re
 import io
+from html import unescape
 from lxml import html
 from PIL import Image
 
 import config
 import calibre_shim
 import epub_handler
+from plugins_manager import plugin_manager
 
 GENERIC_WORDS = [
     r'三部曲', r'四部曲', r'二部曲', r'五部曲', r'套装', r'合集', r'全集',
@@ -193,7 +193,7 @@ def download_cover_from_url(cover_url, delay=1.0):
 
     req = urllib.request.Request(cover_url, headers=headers)
     try:
-        with self.opener.open(req, timeout=config.REQUEST_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=config.REQUEST_TIMEOUT) as resp:
             data = resp.read()
         im = Image.open(io.BytesIO(data))
         if im.mode != 'RGB':
@@ -208,29 +208,25 @@ def download_cover_from_url(cover_url, delay=1.0):
 
 class DoubanProvider:
     """中文元数据第一站（参考并提炼自 Calibre 社区豆瓣插件核心）"""
-    def __init__(self, delay=config.REQUEST_DELAY):
+    def __init__(self, delay=config.REQUEST_DELAY, cookie="", user_agent=""):
         self.delay = delay
         self.last_request_time = 0
         self.rate_lock = threading.Lock()
-        self.cookie_jar = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookie_jar))
-        self.bid = ''.join(random.choices(string.ascii_letters + string.digits, k=11))
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+        )
+        self.cookie = cookie
+        self.user_agent = user_agent
 
-    def _get_headers(self):
-        return {
-            'User-Agent': config.HTTP_HEADERS.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Cookie': f'bid="{self.bid}"; ll="108288"',
-            'Referer': 'https://book.douban.com/'
-        }
-        self.cookie_jar = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookie_jar))
-
-    def _get_headers(self, referer="https://book.douban.com/"):
+    def _request(self, url, referer="https://book.douban.com/"):
         headers = dict(config.HTTP_HEADERS)
-        headers['Referer'] = referer
-        return headers
+        headers["Referer"] = referer
+        if self.user_agent:
+            headers["User-Agent"] = self.user_agent
+        req = urllib.request.Request(url, headers=headers)
+        if self.cookie:
+            req.add_unredirected_header("Cookie", self.cookie)
+        return req
 
     def _rate_limit(self):
         with self.rate_lock:
@@ -250,8 +246,8 @@ class DoubanProvider:
         # 优先使用豆瓣官方轻量 subject_suggest 接口获取 subject id
         try:
             sug_url = f"https://book.douban.com/j/subject_suggest?q={q}"
-            sug_req = urllib.request.Request(sug_url, headers=config.HTTP_HEADERS)
-            with urllib.request.urlopen(sug_req, timeout=5) as sug_resp:
+            sug_req = self._request(sug_url)
+            with self.opener.open(sug_req, timeout=5) as sug_resp:
                 sug_data = json.loads(sug_resp.read().decode('utf-8'))
                 for item in sug_data:
                     item_id = str(item.get('id', '')).strip()
@@ -263,7 +259,7 @@ class DoubanProvider:
 
         try:
             url = f"https://www.douban.com/search?cat=1001&q={q}"
-            req = urllib.request.Request(url, headers=self._get_headers(referer="https://www.douban.com/"))
+            req = self._request(url, referer="https://www.douban.com/")
             with self.opener.open(req, timeout=config.REQUEST_TIMEOUT) as resp:
                 page = resp.read().decode('utf-8', errors='ignore')
             sids = re.findall(r'sid:\s*(\d+)', page)
@@ -281,7 +277,7 @@ class DoubanProvider:
         self._rate_limit()
         try:
             url = f"https://book.douban.com/subject/{sid}/"
-            req = urllib.request.Request(url, headers=self._get_headers(referer="https://book.douban.com/"))
+            req = self._request(url)
             with self.opener.open(req, timeout=config.REQUEST_TIMEOUT) as resp:
                 page = resp.read().decode('utf-8', errors='ignore')
         except Exception:
@@ -466,7 +462,9 @@ class OpenLibraryProvider:
             pubdate = book.get('publish_date', '')
             cover_info = book.get('cover', {})
             cover_url = cover_info.get('large') or cover_info.get('medium') or cover_info.get('small') or ''
-            desc = book.get('notes', '') or book.get('subtitle', '')
+            desc = book.get('description') or book.get('notes') or ''
+            if isinstance(desc, dict):
+                desc = desc.get('value', '')
             subjects = [s.get('name', '') for s in book.get('subjects', []) if s.get('name')][:8]
 
             return {
@@ -596,7 +594,7 @@ class GoogleBooksProvider:
         q = urllib.parse.quote(query.strip())
         url = f"https://www.googleapis.com/books/v1/volumes?q={q}"
         if self.api_key:
-            url += f"&key={self.api_key}"
+            url += "&" + urllib.parse.urlencode({"key": self.api_key})
         req = urllib.request.Request(url, headers={'User-Agent': config.HTTP_HEADERS.get('User-Agent', 'Mozilla/5.0')})
         try:
             with self.opener.open(req, timeout=config.REQUEST_TIMEOUT) as resp:
@@ -763,6 +761,9 @@ class DangDangProvider:
 
                 pub_nodes = p_tree.xpath('//span[@dd_name="出版社"]//a/text()') or p_tree.xpath('//span[@dd_name="出版社"]/text()')
                 pub_str = pub_nodes[0].strip() if pub_nodes else ''
+                description = clean_html_text(" ".join(p_tree.xpath(
+                    '//*[@id="content"]//*[contains(concat(" ", normalize-space(@class), " "), " descrip ")]//text()'
+                )))
 
                 img_nodes = p_tree.xpath('//img[@id="largePic"]/@src') or p_tree.xpath('//img[@id="main-img-slider"]/@src')
                 cover_url = img_nodes[0].strip() if img_nodes else ''
@@ -777,7 +778,7 @@ class DangDangProvider:
                     'pubdate': '',
                     'isbn': isbn,
                     'cover_url': cover_url,
-                    'description': '',
+                    'description': description,
                     'rating': 9,
                     'tags': []
                 }
@@ -791,80 +792,79 @@ class UnifiedMetadataProvider:
     方案二（内置原生 Providers）与 方案三（Calibre 外部插件热插拔）双轨并行。
     优先调度已加载的 Calibre 插件，未命中或未放置插件时自动无缝降级到内置源瀑布流。
     """
-    def __init__(self, google_api_key=None, delay=config.REQUEST_DELAY, calibre_plugin_dir=None):
+    def __init__(self, google_api_key=None, delay=config.REQUEST_DELAY, calibre_plugin_dir=None, sources=None):
         self.delay = delay
-        # 1. 方案二：内置优质纯 Python 数据源
-        self.douban = DoubanProvider(delay=delay)
+        enabled = plugin_manager.enabled_sources(sources)
+        self.source_names = {source_id: name for source_id, name, _ in enabled}
+        settings = {source_id: options for source_id, _, options in enabled}
+        sources = settings.keys()
+        self.calibre_adapters = []
+        if "calibre" in sources:
+            try:
+                loader = calibre_shim.CalibrePluginLoader(plugin_dir=calibre_plugin_dir)
+                self.calibre_adapters = loader.load_all()
+            except Exception:
+                pass
+
+        douban = settings.get("douban", {})
+        self.douban = DoubanProvider(delay=delay, cookie=douban.get("cookie", ""),
+                                     user_agent=douban.get("user_agent", ""))
         self.weread = WeReadProvider(delay=delay)
-        self.google = GoogleBooksProvider(api_key=google_api_key, delay=delay)
+        self.google = GoogleBooksProvider(api_key=settings.get("google_books", {}).get("api_key", google_api_key), delay=delay)
         self.openlibrary = OpenLibraryProvider(delay=delay)
         self.bangumi = BangumiProvider(delay=delay)
         self.dangdang = DangDangProvider(delay=delay)
-
-        # 2. 方案三：Calibre 动态插件加载器
-        self.weread.opener = self.douban.opener
-        self.google.opener = self.douban.opener
-        self.openlibrary.opener = self.douban.opener
-        self.bangumi.opener = self.douban.opener
-        try:
-            self.calibre_loader = calibre_shim.CalibrePluginLoader(plugin_dir=calibre_plugin_dir)
-            self.calibre_adapters = self.calibre_loader.load_all()
-        except Exception:
-            self.calibre_loader = None
-            self.calibre_adapters = []
-
         self.cache = {}
-        self.cache_lock = threading.Lock()
+        self.description_cache = {}
+
+    def fill_description(self, meta, embedded_description=""):
+        """Fill a blank synopsis without replacing the matched edition's metadata."""
+        for description in (meta.get("description"), embedded_description):
+            if clean_html_text(unescape(description or "")):
+                return {**meta, "description": description}
+
+        isbn = epub_handler.isbn10_to_isbn13(meta.get("isbn") or "")
+        if not epub_handler.is_valid_isbn(isbn):
+            return meta
+        if isbn not in self.description_cache:
+            self.description_cache[isbn] = self._find_description(isbn)
+        description = self.description_cache[isbn]
+        return {**meta, "description": description} if description else meta
+
+    def _find_description(self, isbn):
+        for source_id in self.source_names:
+            lookup = getattr(self, "_isbn_" + source_id, None)
+            if not lookup:
+                continue
+            candidate = lookup(isbn)
+            if not candidate or epub_handler.isbn10_to_isbn13(candidate.get("isbn") or "") != isbn:
+                continue
+            description = candidate.get("description") or ""
+            if clean_html_text(unescape(description)):
+                return description
+        return ""
 
     def get_loaded_sources_summary(self):
-        """返回当前启用的数据源列表摘要"""
-        builtin = ["豆瓣读书", "微信读书", "谷歌图书", "Open Library", "Bangumi 番组计划"]
         external = [f"Calibre插件:{ad.name}" for ad in self.calibre_adapters]
         return {
-            'builtin': builtin,
-            'external': external,
-            'total_external': len(external)
+            "builtin": [name for key, name in self.source_names.items() if key != "calibre"],
+            "external": external,
+            "total_external": len(external),
         }
 
     def fetch_by_isbn(self, isbn):
         if not isbn:
             return None
-        clean_isbn = isbn.replace('-', '').strip()
+        clean_isbn = isbn.replace("-", "").strip()
         if clean_isbn in self.cache:
             return self.cache[clean_isbn]
-
-        # [通道 1] 优先调用用户放置的 Calibre 外部插件
-        if self.calibre_adapters:
-            for ad in self.calibre_adapters:
-                meta = ad.identify_by_isbn(clean_isbn)
-                if meta and meta.get('title'):
-                    meta['_calibre_adapter'] = ad
+        for source_id in self.source_names:
+            lookup = getattr(self, "_isbn_" + source_id, None)
+            if lookup:
+                meta = lookup(clean_isbn)
+                if meta:
                     self.cache[clean_isbn] = meta
                     return meta
-
-        # [通道 2] 豆瓣读书 (中文首选)
-        sids = self.douban.search(clean_isbn)
-        if sids:
-            for sid in sids[:3]:
-                meta = self.douban.get_subject_details(sid)
-                if meta and meta.get('isbn'):
-                    self.cache[clean_isbn] = meta
-                    return meta
-
-        # [通道 3] Open Library (全球公版与外文原版，免Key秒查)
-        ol_meta = self.openlibrary.fetch_by_isbn(clean_isbn)
-        if ol_meta and ol_meta.get('title'):
-            self.cache[clean_isbn] = ol_meta
-            return ol_meta
-
-        # [通道 4] Google Books
-        g_results = self.google.search(f"isbn:{clean_isbn}")
-        if g_results:
-            for g in g_results:
-                if g.get('isbn'):
-                    self.cache[clean_isbn] = g
-                    return g
-
         return None
 
     def fetch_by_query(self, query_title, author="", is_collection=False):
@@ -893,17 +893,54 @@ class UnifiedMetadataProvider:
         if query_title not in queries_to_try:
             queries_to_try.append(query_title)
 
-        # [通道 1] 优先调用外部 Calibre 插件
+        for source_id in self.source_names:
+            lookup = getattr(self, "_query_" + source_id)
+            meta = lookup(queries_to_try, core_title, query_title, author, clean_author)
+            if meta:
+                self.cache[cache_key] = meta
+                return meta
+        return None
+
+    def _isbn_calibre(self, clean_isbn):
+        if self.calibre_adapters:
+            for ad in self.calibre_adapters:
+                meta = ad.identify_by_isbn(clean_isbn)
+                if meta and meta.get('title'):
+                    meta['_calibre_adapter'] = ad
+                    return meta
+
+    def _isbn_douban(self, clean_isbn):
+        sids = self.douban.search(clean_isbn)
+        if sids:
+            for sid in sids[:3]:
+                meta = self.douban.get_subject_details(sid)
+                if meta and str(meta.get('isbn', '')).replace('-', '') == clean_isbn:
+                    return meta
+
+    def _isbn_openlibrary(self, clean_isbn):
+        ol_meta = self.openlibrary.fetch_by_isbn(clean_isbn)
+        if ol_meta and ol_meta.get('title'):
+            return ol_meta
+
+    def _isbn_google_books(self, clean_isbn):
+        g_results = self.google.search(f"isbn:{clean_isbn}")
+        expected_isbn = epub_handler.isbn10_to_isbn13(clean_isbn)
+        matches = [
+            item for item in g_results or []
+            if epub_handler.isbn10_to_isbn13(item.get("isbn") or "") == expected_isbn
+        ]
+        return next((item for item in matches if clean_html_text(item.get("description"))), matches[0] if matches else None)
+
+    def _query_calibre(self, queries_to_try, core_title, query_title, author, clean_author):
         if self.calibre_adapters:
             for ad in self.calibre_adapters:
                 meta = ad.identify_by_query(core_title, author=author)
                 if meta and meta.get('title'):
                     if is_title_match(core_title, meta['title'], author_query=author, author_result=meta.get('author', '')) or does_title_correspond(query_title, meta['title'], author, meta.get('author', '')):
                         meta['_calibre_adapter'] = ad
-                        self.cache[cache_key] = meta
                         return meta
 
-        # [通道 2] 豆瓣读书 (中文最全)
+    def _query_douban(self, queries_to_try, core_title, query_title, author, clean_author):
         for q in queries_to_try:
             sids = self.douban.search(q)
             if sids:
@@ -911,51 +948,43 @@ class UnifiedMetadataProvider:
                     meta = self.douban.get_subject_details(sid)
                     if meta and meta.get('isbn'):
                         if is_title_match(core_title, meta['title'], author_query=author, author_result=meta.get('author', '')) or does_title_correspond(query_title, meta['title'], author, meta.get('author', '')):
-                            self.cache[cache_key] = meta
                             return meta
 
-        # [通道 2.5] 当当图书数据库 (国内正版出版物核心源，免Key抗封锁)
+    def _query_dangdang(self, queries_to_try, core_title, query_title, author, clean_author):
         for q in queries_to_try:
             dd_meta = self.dangdang.fetch_by_query(q)
             if dd_meta and dd_meta.get('isbn') and epub_handler.is_valid_isbn(dd_meta['isbn']):
                 if is_title_match(core_title, dd_meta['title'], author_query=clean_author, author_result=dd_meta.get('author', '')) or does_title_correspond(query_title, dd_meta['title'], clean_author, dd_meta.get('author', '')):
-                    self.cache[cache_key] = dd_meta
                     return dd_meta
 
-        # [通道 3] 微信读书 (中文出版物快速高质补充)
+    def _query_weread(self, queries_to_try, core_title, query_title, author, clean_author):
         for q in queries_to_try[:2]:
             wr_list = self.weread.search(q)
             if wr_list:
                 for wr in wr_list[:3]:
                     if is_title_match(core_title, wr['title'], author_query=author, author_result=wr.get('author', '')) or does_title_correspond(query_title, wr['title'], author, wr.get('author', '')):
-                        self.cache[cache_key] = wr
                         return wr
 
-        # [通道 4] Google Books
+    def _query_google_books(self, queries_to_try, core_title, query_title, author, clean_author):
         for q in queries_to_try:
             g_results = self.google.search(q)
             if g_results:
                 for g in g_results:
                     if g.get('isbn') and (is_title_match(core_title, g['title'], author_query=author, author_result=g.get('author', '')) or does_title_correspond(query_title, g['title'], author_query=author, author_result=g.get('author', ''))):
-                        self.cache[cache_key] = g
                         return g
 
-        # [通道 5] Bangumi (轻小说、动漫原作、漫画)
+    def _query_bangumi(self, queries_to_try, core_title, query_title, author, clean_author):
         bgm_meta = self.bangumi.search(core_title)
         if bgm_meta and bgm_meta.get('title'):
             if is_title_match(core_title, bgm_meta['title'], author_query=author, author_result=bgm_meta.get('author', '')) or does_title_correspond(query_title, bgm_meta['title'], author, bgm_meta.get('author', '')):
-                self.cache[cache_key] = bgm_meta
                 return bgm_meta
 
-        # [通道 6] Open Library
+    def _query_openlibrary(self, queries_to_try, core_title, query_title, author, clean_author):
         ol_results = self.openlibrary.search(core_title)
         if ol_results:
             for ol in ol_results:
                 if is_title_match(core_title, ol['title'], author_query=author, author_result=ol.get('author', '')):
-                    self.cache[cache_key] = ol
                     return ol
-
-        return None
 
     def download_cover_image(self, meta):
         if not meta:
