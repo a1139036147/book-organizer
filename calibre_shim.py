@@ -436,7 +436,7 @@ class CalibrePluginLoader:
             if getattr(sys, 'frozen', False):
                 base_dir = os.path.dirname(os.path.abspath(sys.executable))
             else:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
+                base_dir = os.getenv("BOOK_ORGANIZER_IMAGE_DIR") or os.path.dirname(os.path.abspath(__file__))
             self.plugin_dir = plugin_dir or os.path.join(base_dir, "calibre_plugins")
             self.cache_dir = os.path.join(self.plugin_dir, ".extracted")
             self._ensure_dir()

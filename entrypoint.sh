@@ -50,6 +50,10 @@ su - postgres -c "psql -c \"CREATE USER bookuser WITH PASSWORD 'bookpass123';\" 
 su - postgres -c "createdb -O bookuser book_library 2>/dev/null || true"
 
 cleanup() {
+    if [ -n "${WEB_PID:-}" ]; then
+        kill -TERM "$WEB_PID" 2>/dev/null || true
+        wait "$WEB_PID" || true
+    fi
     echo "🛑 [PostgreSQL] 优雅关闭内置数据库..."
     su - postgres -c "$PG_BIN/pg_ctl -D '$PGDATA' -m fast stop" || true
     exit 0
@@ -67,12 +71,9 @@ if [ "$1" = "web" ] || [ -z "$1" ]; then
     echo "  热更新守护:  已开启在线热升级与平滑重载"
     echo "=========================================================="
     
-    # 守护循环：当用户在网页点击热更新后，后台重启不会导致容器退出，直接毫秒级重拉最新代码
-    while true; do
-        python /app/web_app.py || true
-        echo "🔄 [热重载守护] Web 进程已平滑重启，正在拉起最新版本..."
-        sleep 1
-    done
+    python /app/hot_update.py &
+    WEB_PID=$!
+    wait "$WEB_PID"
 elif [ "$1" = "organize" ]; then
     shift
     exec python /app/book_organizer.py --src /source --dst /library "$@"

@@ -30,6 +30,7 @@ if APP_DIR not in sys.path:
 import config
 import bookshelf_manager
 import book_organizer
+import hot_update
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -102,6 +103,7 @@ class TaskManager:
             self.logs.pop(0)
 
 task_manager = TaskManager()
+update_status = {"state": "idle"}
 
 def background_worker(src, dst, action, skip_col, limit, delay, key, dry_run, threads=4, sources=None):
     task_manager.is_running = True
@@ -366,6 +368,8 @@ def api_organize_start():
         return jsonify(success=False, message="请检查目标书库目录和整理方式。"), 400
 
     with task_manager.start_lock:
+        if update_status["state"] == "installing":
+            return jsonify(success=False, message="系统正在热更新，请稍后再启动整理。"), 409
         if task_manager.is_running:
             return jsonify(success=False, message="已有任务正在执行中！"), 409
         settings = load_settings()
@@ -448,7 +452,7 @@ INDEX_HTML = """<!DOCTYPE html>
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scrollbar-gutter: stable; }
-html:has(.modal-overlay.open) { overflow: hidden; }
+html:has(.modal-overlay.open, #systemUpdate[open]) { overflow: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
   background-color: var(--bg-app);
@@ -1223,20 +1227,85 @@ document.addEventListener('DOMContentLoaded', async () => {
 </script>
 
 <!-- 屏幕左下角常驻固定版本号徽章 -->
-<div id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 12px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" title="点击查看系统版本与构建特性" onclick="showVersionInfo()">
+<button type="button" id="appVersionBadge" style="position: fixed; bottom: 14px; left: 16px; z-index: 99999; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); border: 1px solid rgba(14, 165, 233, 0.35); padding: 5px 12px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; cursor: pointer; transition: all 0.2s ease;" title="检查热更新" onclick="showVersionInfo()">
   <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;"></span>
   <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 500;">版本:</span>
   <span style="color: #38bdf8; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">v{{ app_version }}</span>
-</div>
+</button>
+
+<dialog id="systemUpdate" style="margin: auto; width: min(92vw, 420px); padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-app); color: var(--text-primary);">
+  <h2 style="font-size: 1.15rem;">系统更新</h2>
+  <p id="systemUpdateStatus" role="status" style="margin: 14px 0;">当前版本 v{{ app_version }}</p>
+  <form method="dialog" style="display: flex; flex-wrap: wrap; gap: 8px;">
+    <button type="button" class="btn-action btn-blue" id="checkUpdate">检查更新</button>
+    <button type="button" class="btn-action btn-green" id="applyUpdate" hidden>立即热更新</button>
+    <button class="btn-action btn-dark">关闭</button>
+  </form>
+</dialog>
 
 <script>
+const updateDialog = document.getElementById('systemUpdate');
+const updateMessage = document.getElementById('systemUpdateStatus');
+const checkUpdateButton = document.getElementById('checkUpdate');
+const applyUpdateButton = document.getElementById('applyUpdate');
+let selectedRelease;
+
 function showVersionInfo() {
-  alert([
-    '图书整理系统 v{{ app_version }}',
-    '内置数据库 PostgreSQL 16',
-    '在线阅读 Koodo Reader'
-  ].join(String.fromCharCode(10)));
+  if (!updateDialog.open) updateDialog.showModal();
+  if (!checkUpdateButton.disabled) checkUpdateButton.click();
 }
+
+checkUpdateButton.onclick = async () => {
+  checkUpdateButton.disabled = true;
+  applyUpdateButton.hidden = true;
+  updateMessage.textContent = '正在检查已发布版本…';
+  try {
+    const data = await (await fetch('/api/system/check_update', {cache: 'no-store'})).json();
+    if (data.error) throw new Error(data.error);
+    selectedRelease = data.has_update ? data.release : null;
+    applyUpdateButton.hidden = !selectedRelease;
+    updateMessage.textContent = selectedRelease
+      ? `当前 v${data.current_version}，可升级至 v${selectedRelease.version}。`
+      : `当前 v${data.current_version}，已是最新版本。`;
+  } catch (error) {
+    updateMessage.textContent = error.message;
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+};
+
+applyUpdateButton.onclick = async () => {
+  if (!selectedRelease) return;
+  applyUpdateButton.hidden = true;
+  checkUpdateButton.disabled = true;
+  updateMessage.textContent = '正在下载并验证更新，完成后页面会自动刷新…';
+  try {
+    const response = await fetch('/api/system/hot_update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({commit: selectedRelease.commit})
+    });
+    const result = await response.json();
+    if (!result.success) throw new Error(result.error);
+    for (let i = 0; i < 90; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const data = await fetch('/api/system/hot_update', {cache: 'no-store'})
+        .then(response => response.json()).catch(() => null);
+      if (!data) continue;
+      if (data.git_commit === selectedRelease.commit) {
+        location.reload();
+        return;
+      }
+      if (data.state === 'failed') throw new Error(data.error);
+      if (data.state === 'idle') throw new Error('新版启动失败，已恢复镜像自带版本。');
+    }
+    throw new Error('更新等待超时，请再次检查版本。');
+  } catch (error) {
+    updateMessage.textContent = error.message;
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+};
 </script>
 
 </body>
@@ -1287,7 +1356,7 @@ def api_book_chapter(book_idx, chap_idx):
 
 
 # ---- Koodo Reader ----
-KOODO_DIR = os.path.join(APP_DIR, "koodo_reader")
+KOODO_DIR = os.path.join(hot_update.IMAGE_DIR, "koodo_reader")
 
 
 def reader_key(book):
@@ -1344,28 +1413,55 @@ def api_version():
 
 @app.route('/api/system/check_update')
 def api_check_update():
-    import subprocess as _sp
+    if not hot_update.supported():
+        return jsonify(error="当前部署缺少热更新支持，请先拉取新版 Docker 镜像。"), 503
     try:
-        r = _sp.run(['git', 'ls-remote', 'https://github.com/a1139036147/book-organizer.git', 'HEAD'],
-                    capture_output=True, text=True, timeout=10)
-        remote_sha = r.stdout.strip().split()[0][:7] if r.stdout.strip() else ''
-        local_sha = os.getenv('GIT_COMMIT', '')
-        has_update = bool(remote_sha and local_sha and remote_sha != local_sha)
-        return jsonify({"has_update": has_update, "local_commit": local_sha, "remote_commit": remote_sha, "current_version": APP_VERSION})
-    except Exception as ex:
-        return jsonify({"has_update": False, "error": str(ex)})
+        release = hot_update.latest_release()
+        return jsonify(
+            has_update=hot_update.has_update(release, os.getenv("GIT_COMMIT", ""), APP_VERSION),
+            release=release, current_version=APP_VERSION,
+        )
+    except Exception:
+        app.logger.exception("Unable to check for published updates")
+        return jsonify(error="无法检查更新，请确认容器能够访问 GitHub 后重试。"), 502
 
-@app.route('/api/system/hot_update', methods=['POST'])
+
+@app.route('/api/system/hot_update', methods=['GET', 'POST'])
 def api_hot_update():
-    import subprocess as _sp
-    try:
-        r = _sp.run(['git', 'pull', '--ff-only', 'origin', 'main'],
-                    capture_output=True, text=True, timeout=60, cwd=APP_DIR)
-        if r.returncode == 0:
-            os._exit(0)
-        return jsonify({"success": False, "error": r.stderr})
-    except Exception as ex:
-        return jsonify({"success": False, "error": str(ex)})
+    commit = os.getenv("GIT_COMMIT", "")
+    if request.method == "GET":
+        return jsonify(**update_status, git_commit=commit)
+    if not hot_update.supported():
+        return jsonify(success=False, error="请先拉取新版 Docker 镜像。"), 503
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("commit"), str):
+        return jsonify(success=False, error="请先检查更新。"), 400
+
+    def update_worker():
+        try:
+            release = hot_update.latest_release()
+            if data["commit"] != release["commit"] or not hot_update.has_update(release, commit, APP_VERSION):
+                raise hot_update.UpdateError("可用版本已变化，请重新检查更新。")
+            hot_update.install(release)
+        except hot_update.UpdateError as error:
+            update_status.update(state="failed", error=str(error))
+            return
+        except Exception:
+            app.logger.exception("Hot update failed")
+            update_status.update(state="failed", error="下载或验证更新失败，请检查容器日志后重试。")
+            return
+        os._exit(hot_update.RESTART)
+
+    with task_manager.start_lock:
+        if task_manager.is_running or update_status["state"] == "installing":
+            return jsonify(success=False, error="请等当前整理或更新任务结束后重试。"), 409
+        update_status.update(state="installing", error="")
+        try:
+            threading.Thread(target=update_worker, daemon=True).start()
+        except RuntimeError:
+            update_status.update(state="failed", error="无法启动更新任务，请重试。")
+            return jsonify(success=False, error=update_status["error"]), 500
+    return jsonify(success=True), 202
 
 @app.route('/read/<int:book_idx>')
 def read_book_page(book_idx):

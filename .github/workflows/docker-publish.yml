@@ -20,9 +20,11 @@ jobs:
         run: |
           VERSION="2.6.${{ github.run_number }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
+          FULL_SHA=$(git rev-parse HEAD)
           BUILD_TIME=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "FULL_SHA=${FULL_SHA}" >> $GITHUB_OUTPUT
           echo "BUILD_TIME=${BUILD_TIME}" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
@@ -59,4 +61,4 @@ jobs:
           build-args: |
             APP_VERSION=${{ steps.auto_ver.outputs.VERSION }}
             BUILD_DATE=${{ steps.auto_ver.outputs.BUILD_TIME }}
-            GIT_COMMIT=${{ steps.auto_ver.outputs.SHORT_SHA }}
+            GIT_COMMIT=${{ steps.auto_ver.outputs.FULL_SHA }}
