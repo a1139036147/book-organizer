@@ -19,6 +19,7 @@ github-token
 
 # Temporary scripts & data dumps
 test_*.py
+!tests/test_book_mutations.py
 patch_*.py
 append_*.ps1
 part*.txt
