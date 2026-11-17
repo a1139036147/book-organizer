@@ -8,6 +8,7 @@ import datetime
 
 DEFAULT_SRC_DIR = r"G:\123"
 DEFAULT_DST_DIR = r"D:\downloads\魏总的书库（已整理）(1)"
+WEB_NOVELS_DIR = "网络小说"
 
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",

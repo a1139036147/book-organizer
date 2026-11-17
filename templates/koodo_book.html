@@ -21,12 +21,17 @@
 </style>
 <details open id="book-details">
   <summary>书架详情</summary>
-  <img src="{{ url_for('api_cover', book_idx=book_idx) }}" alt="">
+  <img src="{{ url_for('api_cover', book_idx=book_idx, shelf=shelf) }}" alt="">
   <h1>{{ book.title }}</h1>
   {% if book.author %}<div>{{ book.author }}</div>{% endif %}
   {% if book.publisher %}<div>{{ book.publisher }}</div>{% endif %}
   {% if book.pubdate %}<div>{{ book.pubdate }}</div>{% endif %}
   {% if book.isbn %}<div>ISBN {{ book.isbn }}</div>{% endif %}
+  {% if book.qidian_id %}
+  <div><a href="https://m.qidian.com/book/{{ book.qidian_id }}/" target="_blank" rel="noopener">起点作品页</a>
+    {% if book.novel_status %} · {{ book.novel_status }}{% endif %}
+  </div>
+  {% endif %}
   <div>{{ book.format }} · {{ book.file_size_str }}</div>
   {% if book.description %}<p>{{ book.description }}</p>{% endif %}
   <p><a href="{{ file_url }}">下载原文件</a></p>

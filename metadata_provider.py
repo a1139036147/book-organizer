@@ -38,8 +38,9 @@ import json
 import time
 import re
 import io
+import unicodedata
 from html import unescape
-from lxml import html
+from lxml import etree, html
 from PIL import Image
 
 import config
@@ -786,6 +787,71 @@ class DangDangProvider:
             return None
         return None
 
+class QidianProvider:
+    """Look up public metadata from Qidian's mobile search page."""
+
+    def __init__(self, delay=config.REQUEST_DELAY):
+        self.delay = max(delay, 1)
+        self.rate_lock = threading.Lock()
+        self.last_request_time = 0
+
+    @staticmethod
+    def match_key(text):
+        normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+        return "".join(char for char in normalized if char.isalnum())
+
+    def search(self, title, author=""):
+        title = re.sub(r"\s*[（(]?(?:校对版|精校版|全本|完本)[）)]?\s*$", "", title).strip()
+        title_key = self.match_key(title)
+        if not title_key:
+            return None
+        query = urllib.parse.urlencode({"kw": title})
+        headers = {**config.HTTP_HEADERS, "Referer": "https://m.qidian.com/"}
+        request = urllib.request.Request(f"https://m.qidian.com/search?{query}", headers=headers)
+        with self.rate_lock:
+            time.sleep(max(0, self.delay - (time.monotonic() - self.last_request_time)))
+            self.last_request_time = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=config.REQUEST_TIMEOUT) as response:
+                page = html.fromstring(response.read().decode("utf-8"))
+            scripts = page.xpath('//script[@id="vite-plugin-ssr_pageContext"]/text()')
+            if not scripts:
+                return None
+            data = json.loads(scripts[0])["pageContext"]["pageProps"]["pageData"]
+            records = (data.get("bookInfo") or {}).get("records") or []
+        except (OSError, ValueError, KeyError, TypeError, etree.LxmlError):
+            return None
+
+        matches = {}
+        author_key = self.match_key(author)
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            book_id = str(record.get("bid") or "")
+            if (record.get("isPub") not in (0, "0") or not re.fullmatch(r"[0-9]+", book_id)
+                    or self.match_key(record.get("bName")) != title_key
+                    or (author_key and self.match_key(record.get("bAuth")) != author_key)):
+                continue
+            matches[book_id] = record
+        if len(matches) != 1:
+            return None
+
+        book_id, record = next(iter(matches.items()))
+        cover = urllib.parse.urljoin("https://m.qidian.com/", str(record.get("imgUrl") or ""))
+        cover_parts = urllib.parse.urlsplit(cover)
+        if cover_parts.scheme != "https" or cover_parts.hostname != "bookcover.yuewen.com":
+            cover = ""
+        category = record.get("cat") or ""
+        subcategory = record.get("subCateName") or ""
+        return {
+            "source": "qidian", "qidian_id": book_id,
+            "title": record["bName"], "author": record.get("bAuth") or "",
+            "isbn": "", "publisher": "", "description": clean_html_text(record.get("desc")),
+            "cover_url": cover, "tags": [value for value in (category, subcategory) if value],
+            "novel_status": record.get("state") or "",
+        }
+
+
 class UnifiedMetadataProvider:
     """
     统一元数据服务中枢：
@@ -814,6 +880,7 @@ class UnifiedMetadataProvider:
         self.openlibrary = OpenLibraryProvider(delay=delay)
         self.bangumi = BangumiProvider(delay=delay)
         self.dangdang = DangDangProvider(delay=delay)
+        self.qidian = QidianProvider(delay=delay)
         self.cache = {}
         self.description_cache = {}
 
@@ -867,8 +934,8 @@ class UnifiedMetadataProvider:
                     return meta
         return None
 
-    def fetch_by_query(self, query_title, author="", is_collection=False):
-        cache_key = f"{query_title}|{author}"
+    def fetch_by_query(self, query_title, author="", is_collection=False, web_novels=False):
+        cache_key = (query_title, author, web_novels)
         if cache_key in self.cache:
             return self.cache[cache_key]
 
@@ -893,9 +960,19 @@ class UnifiedMetadataProvider:
         if query_title not in queries_to_try:
             queries_to_try.append(query_title)
 
-        for source_id in self.source_names:
-            lookup = getattr(self, "_query_" + source_id)
-            meta = lookup(queries_to_try, core_title, query_title, author, clean_author)
+        sources = [source for source in self.source_names if source != "qidian"]
+        if web_novels and "qidian" in self.source_names:
+            if "douban" in sources:
+                sources.remove("douban")
+                sources = ["douban", "qidian", *sources]
+            else:
+                sources.insert(0, "qidian")
+        for source_id in sources:
+            if source_id == "qidian":
+                meta = self.qidian.search(query_title, author)
+            else:
+                lookup = getattr(self, "_query_" + source_id)
+                meta = lookup(queries_to_try, core_title, query_title, author, clean_author)
             if meta:
                 self.cache[cache_key] = meta
                 return meta

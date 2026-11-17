@@ -12,6 +12,7 @@ dist/
 koodo_reader/
 plugins_config.json
 .env
+github-token
 tcl/
 test_*.py
 patch_*.py

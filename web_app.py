@@ -176,14 +176,23 @@ def api_settings():
     settings.pop("google_key", None)
     return jsonify(settings)
 
+def shelf_root(settings=None, *, allow_directory=True):
+    settings = load_settings() if settings is None else settings
+    return (request.args.get("dir") if allow_directory else None) or settings.get("bookshelf_dir") or settings.get("dst")
+
+
+def shelf_books(root):
+    return bookshelf_manager.scan_library(root, novels=request.args.get("shelf") == "novels")
+
+
 @app.route('/api/shelf', methods=['GET'])
 def api_shelf():
     settings = load_settings()
-    lib_dir = request.args.get('dir') or settings.get('bookshelf_dir') or settings.get('dst')
+    lib_dir = shelf_root(settings)
     if not lib_dir or not os.path.exists(lib_dir):
         return jsonify({"success": False, "message": f"书库目录不存在: {lib_dir}", "books": []})
 
-    books = bookshelf_manager.scan_library(lib_dir)
+    books = shelf_books(lib_dir)
 
     # 过滤与搜索
     q = request.args.get('q', '').strip().lower()
@@ -203,7 +212,7 @@ def api_shelf():
                 continue
         # 搜索过滤
         if q:
-            combo = f"{b.title} {b.author} {b.publisher} {b.isbn}".lower()
+            combo = f"{b.title} {b.author} {b.publisher} {b.isbn} {b.qidian_id} {b.novel_status} {' '.join(map(str, b.tags))}".lower()
             if q not in combo:
                 continue
         filtered.append(b_dict)
@@ -221,8 +230,8 @@ def api_shelf():
 @app.route('/api/cover/<int:book_idx>')
 def api_cover(book_idx):
     settings = load_settings()
-    lib_dir = request.args.get('dir') or settings.get('bookshelf_dir') or settings.get('dst')
-    books = bookshelf_manager.scan_library(lib_dir)
+    lib_dir = shelf_root(settings)
+    books = shelf_books(lib_dir)
     if 0 <= book_idx < len(books):
         b = books[book_idx]
         badge = b.format if b.format else "阅读"
@@ -242,8 +251,8 @@ def api_cover(book_idx):
 @app.route('/api/download/<int:book_idx>')
 def api_download(book_idx):
     settings = load_settings()
-    lib_dir = request.args.get('dir') or settings.get('bookshelf_dir') or settings.get('dst')
-    books = bookshelf_manager.scan_library(lib_dir)
+    lib_dir = shelf_root(settings)
+    books = shelf_books(lib_dir)
     if 0 <= book_idx < len(books):
         b = books[book_idx]
         if b.file_path and os.path.exists(b.file_path):
@@ -259,8 +268,8 @@ def api_download(book_idx):
 @app.route('/api/preview/<int:book_idx>')
 def api_preview(book_idx):
     settings = load_settings()
-    lib_dir = request.args.get('dir') or settings.get('bookshelf_dir') or settings.get('dst')
-    books = bookshelf_manager.scan_library(lib_dir)
+    lib_dir = shelf_root(settings)
+    books = shelf_books(lib_dir)
     if 0 <= book_idx < len(books):
         b = books[book_idx]
         chaps = bookshelf_manager.extract_book_preview(b.file_path)
@@ -276,8 +285,8 @@ def api_preview(book_idx):
 @app.route('/api/metadata/<int:book_idx>', methods=['POST'])
 def api_edit_metadata(book_idx):
     settings = load_settings()
-    lib_dir = request.args.get('dir') or settings.get('bookshelf_dir') or settings.get('dst')
-    books = bookshelf_manager.scan_library(lib_dir)
+    lib_dir = shelf_root(settings)
+    books = shelf_books(lib_dir)
     if 0 <= book_idx < len(books):
         b = books[book_idx]
         allowed = {"title", "author", "isbn", "publisher", "pubdate", "description"}
@@ -300,10 +309,12 @@ def api_edit_metadata(book_idx):
 @app.route('/api/book/<int:book_idx>', methods=['DELETE'])
 def api_delete_book(book_idx):
     settings = load_settings()
-    lib_dir = request.args.get('dir') or settings.get('bookshelf_dir') or settings.get('dst')
-    books = bookshelf_manager.scan_library(lib_dir)
+    lib_dir = shelf_root(settings)
+    books = shelf_books(lib_dir)
     if 0 <= book_idx < len(books):
         b = books[book_idx]
+        if request.args.get("shelf") == "novels":
+            lib_dir = os.path.join(lib_dir, config.WEB_NOVELS_DIR)
         succ, msg = bookshelf_manager.delete_book_item(b, library_dir=lib_dir)
         if succ and db.enabled:
             try:
@@ -556,7 +567,7 @@ header {
 .organize-fields[hidden] { display: none; }
 .organize-fields .form-input { display: block; width: 100%; margin-top: 5px; }
 .nav-tabs a { text-decoration: none; }
-.nav-tabs { display: flex; gap: 8px; }
+.nav-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
 .nav-tab {
   padding: 8px 18px;
   border-radius: 6px;
@@ -851,8 +862,9 @@ header {
     <div class="logo-sub">您通往知识和文化的书架 · 随时随地 尽享阅读</div>
   </div>
   <div class="nav-tabs">
-    <button class="nav-tab active" onclick="switchMainTab('shelf')">🖼️ 我的书架</button>
-    <button class="nav-tab" onclick="switchMainTab('organize')">⚙️ 图书整理</button>
+    <a class="nav-tab{% if not novel_page %} active{% endif %}" data-shelf-link href="{{ url_for('index') }}">我的书架</a>
+    <a class="nav-tab{% if novel_page %} active{% endif %}" data-shelf-link href="{{ url_for('novel_shelf') }}">网络小说</a>
+    <button class="nav-tab" id="organizeTab" onclick="switchMainTab('organize')">⚙️ 图书整理</button>
     <a class="nav-tab" href="{{ url_for('manage_plugins') }}">数据源插件</a>
     <a class="nav-tab" href="{{ url_for('database_page') }}">数据库</a>
   </div>
@@ -872,7 +884,7 @@ header {
       </div>
       <div class="search-row">
         <div class="search-wrapper">
-          <input type="text" id="searchInput" class="search-input" placeholder="按书名、作者、ISBN、出版社检索..." oninput="onSearchInput()">
+          <input type="text" id="searchInput" class="search-input" placeholder="{{ '按书名、作者、分类或起点作品 ID 检索' if novel_page else '按书名、作者、ISBN、出版社检索' }}" oninput="onSearchInput()">
           <button class="clear-btn" onclick="clearSearch()">✖</button>
         </div>
         <button class="search-btn" onclick="loadBooks()">🔍 搜索</button>
@@ -882,7 +894,7 @@ header {
 
     <div class="section-head">
       <div class="section-title">
-        <span>为您收藏的图书</span>
+        <span>{{ '网络小说书架' if novel_page else '为您收藏的图书' }}</span>
       </div>
       <div class="section-stats" id="shelfStats">正在读取藏书...</div>
     </div>
@@ -985,7 +997,9 @@ header {
           <button class="btn-action btn-green" id="modalBtnRead" onclick="onModalRead()">📖 在线阅读</button>
           <button class="btn-action btn-blue" id="modalBtnDownload" onclick="onModalDownload()">⬇️ 下载图书</button>
           <button class="btn-action btn-dark" id="modalBtnEdit" onclick="onModalEdit()">✏️ 编辑信息</button>
+          {% if not novel_page %}
           <button class="btn-action btn-dark" id="modalBtnDouban" onclick="onModalDouban()">🔍 豆瓣检索</button>
+          {% endif %}
           <button class="btn-action btn-red" id="modalBtnDelete" onclick="onModalDelete()">🗑️ 删除图书</button>
         </div>
       </div>
@@ -1016,11 +1030,23 @@ let currentFormat = "全部";
 let allBooks = [];
 let activeBook = null;
 let pollTimer = null;
+const novelShelf = {{ novel_page | tojson }};
+const escapeBookText = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+})[char]);
+
+function bookEndpoint(path, params = {}) {
+  const query = new URLSearchParams(params);
+  if (novelShelf) query.set('shelf', 'novels');
+  const suffix = query.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
 
 function switchMainTab(tab) {
-  document.querySelectorAll('.nav-tab').forEach((el, idx) => {
-    el.classList.toggle('active', (tab === 'shelf' && idx === 0) || (tab === 'organize' && idx === 1));
+  document.querySelectorAll('[data-shelf-link]').forEach((link, index) => {
+    link.classList.toggle('active', tab === 'shelf' && index === Number(novelShelf));
   });
+  document.getElementById('organizeTab').classList.toggle('active', tab === 'organize');
   document.getElementById('tab-shelf').classList.toggle('active', tab === 'shelf');
   document.getElementById('tab-organize').classList.toggle('active', tab === 'organize');
   if (tab === 'shelf') loadBooks();
@@ -1046,7 +1072,7 @@ function clearSearch() {
 
 async function loadBooks() {
   const q = document.getElementById('searchInput').value.trim();
-  const url = `/api/shelf?format=${encodeURIComponent(currentFormat)}&q=${encodeURIComponent(q)}`;
+  const url = bookEndpoint('/api/shelf', {format: currentFormat, q});
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -1055,7 +1081,7 @@ async function loadBooks() {
       renderGrid(allBooks);
       document.getElementById('shelfStats').textContent = `共 ${data.total_count} 本藏书 · 筛选出 ${data.filtered_count} 本 · 总大小: ${data.total_size}`;
     } else {
-      document.getElementById('bookGrid').innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 60px 0; color: var(--text-muted);">${data.message}</div>`;
+      document.getElementById('bookGrid').innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 60px 0; color: var(--text-muted);">${escapeBookText(data.message)}</div>`;
     }
   } catch (err) {
     console.error(err);
@@ -1078,11 +1104,11 @@ function renderGrid(books) {
   container.innerHTML = books.map((b, idx) => `
     <div class="book-card" onclick="openBookModal(${idx})">
       <div class="card-cover-box">
-        <img class="card-cover" src="/api/cover/${b.id}" loading="lazy" alt="${b.title}">
-        <span class="card-badge">${b.format || '阅读'}</span>
+        <img class="card-cover" src="${bookEndpoint(`/api/cover/${b.id}`)}" loading="lazy" alt="${escapeBookText(b.title)}">
+        <span class="card-badge">${escapeBookText(b.format || '阅读')}</span>
       </div>
-      <div class="card-title" title="${b.title}">${b.title}</div>
-      <div class="card-author" title="${b.author}">${b.author || '未知作者'}</div>
+      <div class="card-title" title="${escapeBookText(b.title)}">${escapeBookText(b.title)}</div>
+      <div class="card-author" title="${escapeBookText(b.author)}">${escapeBookText(b.author || '未知作者')}</div>
     </div>
   `).join('');
 }
@@ -1091,16 +1117,22 @@ function openBookModal(idx) {
   activeBook = allBooks[idx];
   if (!activeBook) return;
 
-  document.getElementById('modalCover').src = `/api/cover/${activeBook.id}`;
+  document.getElementById('modalCover').src = bookEndpoint(`/api/cover/${activeBook.id}`);
   document.getElementById('modalTitle').textContent = `《${activeBook.title}》`;
   document.getElementById('modalAuthor').textContent = `作者: ${activeBook.author || '未知'}`;
 
-  const metaHtml = `
-    出版社: ${activeBook.publisher || '未知'}<br>
-    出版日期: ${activeBook.pubdate || '未知'}<br>
-    ISBN: ${activeBook.isbn || '无'}<br>
-    文件格式: ${activeBook.format}  |  文件大小: ${activeBook.file_size_str}<br>
-    目录: ${activeBook.folder_path ? activeBook.folder_path.split('/').pop().split('\\\\').pop() : ''}
+  const novelDetails = novelShelf && /^[0-9]+$/.test(activeBook.qidian_id)
+    ? `<a href="https://m.qidian.com/book/${activeBook.qidian_id}/" target="_blank" rel="noopener">起点作品页</a>
+       · ${escapeBookText(activeBook.novel_status || '状态未知')}<br>
+       ${escapeBookText((activeBook.tags || []).join(' · '))}<br>`
+    : '';
+  const publishedDetails = novelShelf ? novelDetails : `
+    出版社: ${escapeBookText(activeBook.publisher || '未知')}<br>
+    出版日期: ${escapeBookText(activeBook.pubdate || '未知')}<br>
+    ISBN: ${escapeBookText(activeBook.isbn || '无')}<br>`;
+  const metaHtml = `${publishedDetails}
+    文件格式: ${escapeBookText(activeBook.format)}  |  文件大小: ${escapeBookText(activeBook.file_size_str)}<br>
+    目录: ${escapeBookText(activeBook.folder_path?.split('/').pop().split('\\\\').pop())}
   `;
   document.getElementById('modalMeta').innerHTML = metaHtml;
   document.getElementById('modalDesc').textContent = activeBook.description || '暂无内容简介。';
@@ -1116,12 +1148,12 @@ function openModal(id) {
 }
 
 function onModalDownload() {
-  if (activeBook) window.open(`/api/download/${activeBook.id}`, '_blank');
+  if (activeBook) window.open(bookEndpoint(`/api/download/${activeBook.id}`), '_blank');
 }
 
 function onModalRead() {
   if (!activeBook?.reader_key) return;
-  window.open(`/read/${activeBook.id}?key=${activeBook.reader_key}`, '_blank', 'noopener');
+  window.open(bookEndpoint(`/read/${activeBook.id}`, {key: activeBook.reader_key}), '_blank', 'noopener');
 }
 
 function onModalEdit() {
@@ -1145,7 +1177,7 @@ async function saveMetadata() {
     isbn: document.getElementById('editIsbn').value.trim(),
     description: document.getElementById('editDesc').value.trim()
   };
-  const res = await fetch(`/api/metadata/${activeBook.id}`, {
+  const res = await fetch(bookEndpoint(`/api/metadata/${activeBook.id}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -1163,7 +1195,7 @@ async function saveMetadata() {
 async function onModalDelete() {
   if (!activeBook) return;
   if (!confirm(`确定要从书架彻底删除图书《${activeBook.title}》吗？此操作将从磁盘移除该文件！`)) return;
-  const res = await fetch(`/api/book/${activeBook.id}`, { method: 'DELETE' });
+  const res = await fetch(bookEndpoint(`/api/book/${activeBook.id}`), { method: 'DELETE' });
   const data = await res.json();
   if (data.success) {
     closeModal('bookModal');
@@ -1320,6 +1352,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     <button type="button" class="btn-action btn-green" id="applyUpdate" hidden>立即热更新</button>
     <button class="btn-action btn-dark">关闭</button>
   </form>
+  <form id="githubTokenForm" style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);">
+    <label for="githubToken">GitHub Token</label>
+    <input type="password" id="githubToken" class="form-input" placeholder="粘贴新令牌"
+           autocomplete="off" maxlength="512" style="width: 100%; margin: 6px 0;" required>
+    <p id="githubTokenStatus" role="status" style="margin-bottom: 8px; font-size: 0.85rem;"></p>
+    <button type="submit" class="btn-action btn-blue" id="saveGithubToken">保存令牌</button>
+    <button type="button" class="btn-action btn-dark" id="clearGithubToken">清除网页令牌</button>
+  </form>
 </dialog>
 
 <script>
@@ -1328,9 +1368,64 @@ const updateMessage = document.getElementById('systemUpdateStatus');
 const checkUpdateButton = document.getElementById('checkUpdate');
 const applyUpdateButton = document.getElementById('applyUpdate');
 let selectedRelease;
+const tokenInput = document.getElementById('githubToken');
+const tokenStatus = document.getElementById('githubTokenStatus');
+const tokenSave = document.getElementById('saveGithubToken');
+const tokenClear = document.getElementById('clearGithubToken');
+
+function showTokenSource(source) {
+  tokenStatus.textContent = {
+    web: '已使用网页保存的令牌。',
+    environment: '已使用容器环境变量中的令牌。',
+    none: '未配置令牌。'
+  }[source];
+  tokenClear.disabled = source !== 'web';
+}
+
+async function loadTokenStatus() {
+  tokenClear.disabled = true;
+  try {
+    const response = await fetch('/api/system/github_token', {cache: 'no-store'});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    showTokenSource(data.source);
+  } catch (error) {
+    tokenStatus.textContent = error.message;
+  }
+}
+
+async function changeToken(token) {
+  tokenSave.disabled = true;
+  tokenClear.disabled = true;
+  try {
+    const response = await fetch('/api/system/github_token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    tokenInput.value = '';
+    showTokenSource(data.source);
+  } catch (error) {
+    tokenStatus.textContent = error.message;
+    tokenClear.disabled = false;
+  } finally {
+    tokenSave.disabled = false;
+  }
+}
+
+document.getElementById('githubTokenForm').onsubmit = event => {
+  event.preventDefault();
+  const token = tokenInput.value.trim();
+  if (token) changeToken(token);
+};
+tokenClear.onclick = () => changeToken('');
+updateDialog.addEventListener('close', () => { tokenInput.value = ''; });
 
 function showVersionInfo() {
   if (!updateDialog.open) updateDialog.showModal();
+  loadTokenStatus();
   if (!checkUpdateButton.disabled) checkUpdateButton.click();
 }
 
@@ -1397,7 +1492,7 @@ applyUpdateButton.onclick = async () => {
 def api_book_toc(book_idx):
     """只读取章节目录大纲 (0.02秒瞬开，不解压正文)"""
     lib_dir = get_library_dir()
-    books = bookshelf_manager.scan_library(lib_dir)
+    books = shelf_books(lib_dir)
     book = next((b for b in books if b.id == book_idx), None)
     if not book:
         return jsonify({"success": False, "error": "书籍未找到"}), 404
@@ -1416,7 +1511,7 @@ def api_book_toc(book_idx):
 def api_book_chapter(book_idx, chap_idx):
     """按需只解压并读取当前一章正文 (0.01秒呈现，彻底不卡)"""
     lib_dir = get_library_dir()
-    books = bookshelf_manager.scan_library(lib_dir)
+    books = shelf_books(lib_dir)
     book = next((b for b in books if b.id == book_idx), None)
     if not book:
         return jsonify({"success": False, "error": "书籍未找到"}), 404
@@ -1443,8 +1538,7 @@ def reader_key(book):
 
 
 def find_reader_book(book_idx, key=None):
-    settings = load_settings()
-    books = bookshelf_manager.scan_library(settings.get("bookshelf_dir") or settings.get("dst"))
+    books = shelf_books(shelf_root(allow_directory=False))
     if 0 <= book_idx < len(books):
         book = books[book_idx]
         if book.file_path and (key is None or reader_key(book) == key):
@@ -1505,6 +1599,25 @@ def api_check_update():
         return jsonify(error="无法读取发布版本，请检查容器到 GitHub 和 Docker Hub 的连接，或直接拉取新版镜像。"), 502
 
 
+@app.route("/api/system/github_token", methods=["GET", "POST"])
+def api_github_token():
+    try:
+        if request.method == "POST":
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict) or not isinstance(data.get("token"), str):
+                return jsonify(error="令牌设置格式无效。"), 400
+            hot_update.save_github_token(data["token"].strip())
+        _, source = hot_update.github_token()
+        response = jsonify(source=source)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except OSError:
+        app.logger.exception("Unable to access GitHub token configuration")
+        return jsonify(error="无法读取或保存令牌，请检查配置目录权限。"), 503
+
+
 @app.route('/api/system/hot_update', methods=['GET', 'POST'])
 def api_hot_update():
     commit = os.getenv("GIT_COMMIT", "")
@@ -1549,21 +1662,30 @@ def read_book_page(book_idx):
     if not os.path.isfile(book.file_path):
         abort(404, "书籍文件不可用。")
     require_koodo()
+    shelf = "novels" if request.args.get("shelf") == "novels" else None
     file_url = url_for(
         "reader_file", book_idx=book_idx, key=reader_key(book),
         filename=os.path.basename(book.file_path),
+        shelf=shelf,
     )
     reader_url = url_for("koodo_index") + "#/manager/home?" + urllib.parse.urlencode({
         "bookshelfFile": file_url,
     })
     return render_template(
         "koodo_book.html", book=book, book_idx=book_idx,
-        file_url=file_url, reader_url=reader_url,
+        file_url=file_url, reader_url=reader_url, shelf=shelf,
     )
 
 @app.route('/')
 def index():
-    return render_template_string(INDEX_HTML, app_version=os.getenv('APP_VERSION', APP_VERSION), sources=plugin_manager.list())
+    return render_template_string(INDEX_HTML, app_version=os.getenv('APP_VERSION', APP_VERSION), sources=plugin_manager.list(), novel_page=False)
+
+@app.get("/novels")
+def novel_shelf():
+    return render_template_string(
+        INDEX_HTML, app_version=APP_VERSION, sources=plugin_manager.list(), novel_page=True,
+    )
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 14808))

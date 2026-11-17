@@ -13,6 +13,7 @@ Book Organizer - 智能图书整理工具
 若均为互不相关的单本且无合集ISBN则判为拼凑合集跳过。
 """
 import os
+import re
 import sys
 import threading
 from db_manager import db
@@ -308,7 +309,8 @@ class BookOrganizer:
 
         # 2. 提取清洗后的检索书名、作者提示、合集特征
         cleaned_search_title = epub_handler.clean_title_for_search(filename, epub_meta.get('title', ''))
-        author_hint = epub_meta.get('creator', '')
+        _, filename_author = epub_handler.extract_title_author_from_filename(filename)
+        author_hint = epub_meta.get('creator') or filename_author
         is_col_name, col_kw_reason = epub_handler.check_is_collection(filename, epub_meta.get('title', ''))
 
         meta = None
@@ -396,21 +398,28 @@ class BookOrganizer:
         # 场景 C: 书内未提取到任何出版 ISBN (0 个)
         else:
             self.log(f"  -> 书内未直接提取到出版ISBN，联网检索元数据 (书名: '{cleaned_search_title}', 作者: '{author_hint}')...", 'info')
-            meta = self.provider.fetch_by_query(cleaned_search_title, author=author_hint, is_collection=is_col_name)
+            novel_filename = re.sub(r"全本|校对版", "", filename)
+            novel_title = re.sub(r"全本|校对版", "", epub_meta.get("title") or "")
+            pooled_books, _ = epub_handler.check_is_collection(novel_filename, novel_title)
+            meta = self.provider.fetch_by_query(
+                cleaned_search_title, author=author_hint, is_collection=is_col_name,
+                web_novels=not pooled_books,
+            )
 
         # 4. 核心终检：是否有合法的出版 ISBN
         has_isbn = bool(meta and meta.get('isbn') and epub_handler.is_valid_isbn(meta['isbn']))
+        qidian_id = meta.get("qidian_id") if meta and meta.get("source") == "qidian" else None
 
         # 如果被判定为合集特征，但最终无法获得合法出版ISBN -> 跳过！
-        if is_col_name and not has_isbn:
+        if is_col_name and not has_isbn and not qidian_id:
             self.log(f"  * [跳过不整理] 疑似多本书合集/全本 ({col_kw_reason})，且未查询到出版ISBN号。", 'skip')
             with self.lock: self.stats['skipped_collections'].append((filename, col_kw_reason))
             self.notify_stats()
             return
 
         # 如果单本书也完全未能查询到有效出版ISBN号 -> 跳过！
-        if not has_isbn:
-            self.log("  * [跳过不整理] 未能从书内或网络获取到有效出版ISBN号，跳过整理。", 'skip')
+        if not has_isbn and not qidian_id:
+            self.log("  * [跳过不整理] 未找到有效出版 ISBN 或匹配的起点作品。", 'skip')
             with self.lock: self.stats['skipped_no_isbn'].append((filename, "未找到有效ISBN号"))
             self.notify_stats()
             return
@@ -431,22 +440,26 @@ class BookOrganizer:
             safe_title = safe_title[:40].strip(' -_')
         if len(safe_author) > 18:
             safe_author = safe_author[:18].strip(' -_')
-        clean_isbn = meta['isbn'].replace('-', '').strip()
-
-        folder_name = f"{safe_title}（{safe_author}）{{isbn-{clean_isbn}}}"
+        book_identifier = f"qidian-{qidian_id}" if qidian_id else f"isbn-{meta['isbn'].replace('-', '').strip()}"
+        folder_name = f"{safe_title}（{safe_author}）{{{book_identifier}}}"
+        if qidian_id:
+            folder_name = os.path.join(config.WEB_NOVELS_DIR, folder_name)
         target_dir = os.path.join(self.dst_dir, folder_name)
 
-        target_book_filename = f"{safe_title}-{safe_author}{ext}"
+        file_stem = f"{safe_title}-{safe_author}"
+        if qidian_id:
+            file_stem += f"-{digest[:16]}"
+        target_book_filename = f"{file_stem}{ext}"
         target_book_path = os.path.join(target_dir, target_book_filename)
-        target_opf_path = os.path.join(target_dir, f"{safe_title}-{safe_author}.opf")
+        target_opf_path = os.path.join(target_dir, f"{file_stem}.opf")
         target_json_path = os.path.join(target_dir, 'metadata.json')
         target_cover_path = os.path.join(target_dir, 'cover.jpg')
 
         if self.dry_run:
-            self.log(f"  [成功匹配] (ISBN: {clean_isbn}, 来源: {meta.get('source')})", 'success')
+            self.log(f"  [成功匹配] ({book_identifier}, 来源: {meta.get('source')})", 'success')
             self.log(f"    拟生成目录: {folder_name}", 'info')
-            self.log(f"    拟存放文件: {target_book_filename}, metadata.json, {safe_title}-{safe_author}.opf, cover.jpg", 'info')
-            with self.lock: self.stats['organized'].append((filename, folder_name, clean_isbn))
+            self.log(f"    拟存放文件: {target_book_filename}, metadata.json, {file_stem}.opf, cover.jpg", 'info')
+            with self.lock: self.stats['organized'].append((filename, folder_name, book_identifier))
             self.notify_stats()
             return file_path
 
@@ -502,11 +515,11 @@ class BookOrganizer:
 
         if db.enabled and not db.record_file(
             target_book_path, meta, digest=digest, source=file_path, cover=target_cover_path,
-            is_collection=is_col_name,
+            is_collection=is_col_name and not qidian_id,
         ):
             self.log("  [警告] 图书文件已入库，数据库索引写入失败，下次核对书库时会重试。", "warning")
         self.log(f"  [整理完成] 已成功规范化入库: {folder_name}", 'success')
-        with self.lock: self.stats['organized'].append((filename, folder_name, clean_isbn))
+        with self.lock: self.stats['organized'].append((filename, folder_name, book_identifier))
         self.notify_stats()
         return target_book_path
 

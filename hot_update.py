@@ -6,7 +6,7 @@ import re
 import signal
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 import time
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -46,6 +46,35 @@ def state_dir():
     return CONFIG_DIR / "hot-update" / BASE_COMMIT
 
 
+def github_token():
+    try:
+        saved = (CONFIG_DIR / "github-token").read_text(encoding="utf-8").strip()
+        if saved:
+            return saved, "web"
+    except FileNotFoundError:
+        pass
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    return token, "environment" if token else "none"
+
+
+def save_github_token(token):
+    path = CONFIG_DIR / "github-token"
+    if not token:
+        path.unlink(missing_ok=True)
+        return
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,512}", token):
+        raise ValueError("GitHub Token 格式无效。")
+    temporary = None
+    try:
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=CONFIG_DIR, delete=False) as file:
+            temporary = Path(file.name)
+            file.write(token)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def latest_release():
     try:
         return github_release()
@@ -55,7 +84,7 @@ def latest_release():
 
 def github_release():
     request = Request(PUBLISHED_RUNS, headers={"Accept": "application/vnd.github+json"})
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    token, _ = github_token()
     if token:
         request.add_unredirected_header("Authorization", f"Bearer {token}")
     with urlopen(request, timeout=10) as response:

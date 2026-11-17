@@ -11,6 +11,7 @@ import zipfile
 import subprocess
 from xml.etree import ElementTree as ET
 from PIL import Image, ImageDraw, ImageFont
+from config import WEB_NOVELS_DIR
 
 # 支持的电子书扩展名
 
@@ -139,6 +140,8 @@ class BookItem:
         self.publisher = ""
         self.pubdate = ""
         self.description = ""
+        self.qidian_id = ""
+        self.novel_status = ""
         self.tags = []
         self.format = ""
         self.file_size = 0
@@ -156,6 +159,8 @@ class BookItem:
             'publisher': self.publisher,
             'pubdate': self.pubdate,
             'description': self.description,
+            'qidian_id': self.qidian_id,
+            'novel_status': self.novel_status,
             'tags': self.tags,
             'format': self.format,
             'file_size': self.file_size,
@@ -241,6 +246,10 @@ def scan_book_folder(folder_path):
                     book.pubdate = pd
                 if meta.get('description'):
                     book.description = clean_html_tags(meta['description'])
+                qidian_id = str(meta.get("qidian_id") or "")
+                if re.fullmatch(r"[0-9]+", qidian_id):
+                    book.qidian_id = qidian_id
+                    book.novel_status = str(meta.get("novel_status") or "")
                 if meta.get('tags'):
                     book.tags = meta['tags'] if isinstance(meta['tags'], list) else [meta['tags']]
         except Exception:
@@ -258,10 +267,14 @@ def scan_book_folder(folder_path):
 
     return book
 
-def scan_library(library_dir):
+def scan_library(library_dir, *, novels=False):
     """扫描整个书库目录，返回所有书籍列表"""
     books = []
-    if not library_dir or not os.path.isdir(library_dir):
+    if not library_dir:
+        return books
+    if novels:
+        library_dir = os.path.join(library_dir, WEB_NOVELS_DIR)
+    if not os.path.isdir(library_dir):
         return books
 
     try:
@@ -271,6 +284,8 @@ def scan_library(library_dir):
 
     # 1. 扫描直接子目录
     for name in entries:
+        if not novels and name == WEB_NOVELS_DIR:
+            continue
         sub_path = os.path.join(library_dir, name)
         if os.path.isdir(sub_path):
             b = scan_book_folder(sub_path)
@@ -315,7 +330,7 @@ def index_library_files(library_dir, database, *, write=True, refresh_metadata=F
     indexed = 0
     failed = 0
     known_files = database.file_hashes()
-    for book in scan_library(library_dir):
+    for book in [*scan_library(library_dir), *scan_library(library_dir, novels=True)]:
         if stop_event is not None and stop_event.is_set():
             break
         for path in book.all_files:
@@ -408,6 +423,8 @@ def update_book_metadata(book_item, new_meta):
         "description": book_item.description,
         "tags": book_item.tags
     }
+    if book_item.qidian_id:
+        json_data.update(qidian_id=book_item.qidian_id, novel_status=book_item.novel_status, source="qidian")
     try:
         with open(meta_json_path, 'w', encoding='utf-8') as f:
             json.dump(json_data, f, ensure_ascii=False, indent=2)

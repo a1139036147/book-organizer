@@ -17,6 +17,7 @@ SOURCES = {
     "google_books": ("Google Books", {"api_key": "API Key"}),
     "bangumi": ("Bangumi 番组计划", {}),
     "openlibrary": ("Open Library", {}),
+    "qidian": ("起点中文网（网络小说）", {}),
 }
 SECRET_FIELDS = {"cookie", "api_key"}
 

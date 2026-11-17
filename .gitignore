@@ -15,6 +15,7 @@ tcl/
 settings.json
 plugins_config.json
 .env
+github-token
 
 # Temporary scripts & data dumps
 test_*.py
