@@ -17,6 +17,8 @@ import queue
 import threading
 import mimetypes
 import math
+import stat
+import uuid
 from hashlib import sha256
 import urllib.parse
 from io import BytesIO
@@ -185,6 +187,73 @@ def shelf_books(root):
     return bookshelf_manager.scan_library(root, novels=request.args.get("shelf") == "novels")
 
 
+book_mutation_lock = threading.RLock()
+
+
+def mutation_identity(book, library):
+    """Stable path UUID plus a precondition covering the current on-disk book."""
+    root = os.path.realpath(os.path.abspath(library))
+    folder = os.path.abspath(book.folder_path)
+    paths = {folder, os.path.abspath(book.file_path)}
+    paths.update(os.path.abspath(path) for path in book.all_files)
+    # Metadata changes must also invalidate a form opened in another browser.
+    paths.update(os.path.join(folder, name) for name in os.listdir(folder)
+                 if name.lower() == "metadata.json" or name.lower().endswith(".opf"))
+    snapshot = []
+    for path in sorted(paths):
+        resolved = os.path.realpath(path)
+        if os.path.commonpath((root, resolved)) != root:
+            raise ValueError("图书路径已超出当前书库。")
+        info = os.stat(path, follow_symlinks=False)
+        if not (stat.S_ISREG(info.st_mode) or (path == folder and stat.S_ISDIR(info.st_mode))):
+            raise ValueError("图书路径不是普通文件或目录。")
+        snapshot.append((resolved, info.st_dev, info.st_ino, info.st_size,
+                         info.st_mtime_ns, info.st_ctime_ns))
+    if not stat.S_ISREG(os.stat(book.file_path, follow_symlinks=False).st_mode):
+        raise ValueError("图书文件不可用。")
+    # Deterministic UUIDs survive rescans/restarts without requiring PostgreSQL.
+    book_id = str(uuid.uuid5(uuid.NAMESPACE_URL, os.path.normcase(os.path.realpath(book.file_path))))
+    version = sha256(json.dumps(snapshot, ensure_ascii=True).encode("utf-8")).hexdigest()
+    return book_id, version
+
+
+def mutation_library(settings=None):
+    library = shelf_root(settings, allow_directory=False)
+    if request.args.get("shelf") == "novels" and library:
+        library = os.path.join(library, config.WEB_NOVELS_DIR)
+    return library
+
+
+def find_mutation_book(book_id):
+    """Never fall back to an index: an old page must not mutate another book."""
+    expected = request.headers.get("If-Match")
+    if not expected:
+        abort(428, description="缺少图书版本，请刷新书架后重试。")
+    settings = load_settings()
+    library = mutation_library(settings)
+    if not library or not os.path.isdir(library):
+        abort(404, description="书库目录不可用。")
+    for book in shelf_books(shelf_root(settings, allow_directory=False)):
+        try:
+            current_id, version = mutation_identity(book, library)
+        except (OSError, ValueError, TypeError):
+            continue
+        if current_id == book_id:
+            if expected != '"' + version + '"':
+                abort(412, description="图书已发生变化，请刷新书架后重试。")
+            return book, library
+    abort(404, description="图书已移除或文件不可用，请刷新书架。")
+
+
+@app.errorhandler(404)
+@app.errorhandler(412)
+@app.errorhandler(428)
+def book_request_error(error):
+    if request.path.startswith(("/api/metadata/", "/api/book/")):
+        return jsonify(success=False, message=error.description), error.code
+    return error
+
+
 @app.route('/api/shelf', methods=['GET'])
 def api_shelf():
     settings = load_settings()
@@ -199,10 +268,15 @@ def api_shelf():
     fmt = request.args.get('format', '全部').strip().upper()
 
     filtered = []
+    editable_library = mutation_library(settings)
     for idx, b in enumerate(books):
         b_dict = b.to_dict()
         b_dict['id'] = str(idx)
         b_dict['reader_key'] = reader_key(b) if b.file_path else None
+        try:
+            b_dict['mutation_id'], b_dict['mutation_version'] = mutation_identity(b, editable_library)
+        except (OSError, ValueError, TypeError):
+            b_dict['mutation_id'] = b_dict['mutation_version'] = None
         # 格式过滤
         if fmt != '全部':
             if fmt == '其他':
@@ -282,13 +356,10 @@ def api_preview(book_idx):
         })
     return jsonify({"success": False, "error": "Book not found"}), 404
 
-@app.route('/api/metadata/<int:book_idx>', methods=['POST'])
-def api_edit_metadata(book_idx):
-    settings = load_settings()
-    lib_dir = shelf_root(settings)
-    books = shelf_books(lib_dir)
-    if 0 <= book_idx < len(books):
-        b = books[book_idx]
+@app.route('/api/metadata/<uuid:book_id>', methods=['POST'])
+def api_edit_metadata(book_id):
+    with book_mutation_lock:
+        b, _ = find_mutation_book(str(book_id))
         allowed = {"title", "author", "isbn", "publisher", "pubdate", "description"}
         data = request.get_json(silent=True)
         if not isinstance(data, dict) or any(
@@ -304,17 +375,11 @@ def api_edit_metadata(book_idx):
             except Exception:
                 app.logger.exception("Unable to refresh database metadata")
         return jsonify({"success": succ, "message": msg})
-    return jsonify({"success": False, "message": "图书不存在"}), 404
 
-@app.route('/api/book/<int:book_idx>', methods=['DELETE'])
-def api_delete_book(book_idx):
-    settings = load_settings()
-    lib_dir = shelf_root(settings)
-    books = shelf_books(lib_dir)
-    if 0 <= book_idx < len(books):
-        b = books[book_idx]
-        if request.args.get("shelf") == "novels":
-            lib_dir = os.path.join(lib_dir, config.WEB_NOVELS_DIR)
+@app.route('/api/book/<uuid:book_id>', methods=['DELETE'])
+def api_delete_book(book_id):
+    with book_mutation_lock:
+        b, lib_dir = find_mutation_book(str(book_id))
         succ, msg = bookshelf_manager.delete_book_item(b, library_dir=lib_dir)
         if succ and db.enabled:
             try:
@@ -322,7 +387,6 @@ def api_delete_book(book_idx):
             except Exception:
                 app.logger.exception("Unable to remove deleted book from database")
         return jsonify({"success": succ, "message": msg})
-    return jsonify({"success": False, "message": "图书不存在"}), 404
 
 @app.get("/database")
 def database_page():
@@ -1169,6 +1233,10 @@ function onModalEdit() {
 
 async function saveMetadata() {
   if (!activeBook) return;
+  if (!activeBook.mutation_id || !activeBook.mutation_version) {
+    alert('图书状态不可用，请刷新书架后重试。');
+    return;
+  }
   const body = {
     title: document.getElementById('editTitle').value.trim(),
     author: document.getElementById('editAuthor').value.trim(),
@@ -1177,9 +1245,9 @@ async function saveMetadata() {
     isbn: document.getElementById('editIsbn').value.trim(),
     description: document.getElementById('editDesc').value.trim()
   };
-  const res = await fetch(bookEndpoint(`/api/metadata/${activeBook.id}`), {
+  const res = await fetch(bookEndpoint(`/api/metadata/${activeBook.mutation_id}`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'If-Match': `"${activeBook.mutation_version}"` },
     body: JSON.stringify(body)
   });
   const data = await res.json();
@@ -1194,8 +1262,14 @@ async function saveMetadata() {
 
 async function onModalDelete() {
   if (!activeBook) return;
+  if (!activeBook.mutation_id || !activeBook.mutation_version) {
+    alert('图书状态不可用，请刷新书架后重试。');
+    return;
+  }
   if (!confirm(`确定要从书架彻底删除图书《${activeBook.title}》吗？此操作将从磁盘移除该文件！`)) return;
-  const res = await fetch(bookEndpoint(`/api/book/${activeBook.id}`), { method: 'DELETE' });
+  const res = await fetch(bookEndpoint(`/api/book/${activeBook.mutation_id}`), {
+    method: 'DELETE', headers: {'If-Match': `"${activeBook.mutation_version}"`}
+  });
   const data = await res.json();
   if (data.success) {
     closeModal('bookModal');

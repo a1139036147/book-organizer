@@ -89,7 +89,29 @@
 
 ---
 
-## 六、启动方式
+## 六、Web 图书修改接口
+
+书架接口 `GET /api/shelf` 为每本书返回 `mutation_id` 和 `mutation_version`。
+编辑和删除分别使用：
+
+```text
+POST   /api/metadata/<mutation_id>
+DELETE /api/book/<mutation_id>
+If-Match: "<mutation_version>"
+```
+
+`mutation_id` 是从图书规范化绝对路径生成的 UUID，在重新扫描、修改书名和进程重启后保持一致，
+不依赖 PostgreSQL。移动文件会生成新的 UUID，旧页面必须刷新。
+数字下标仅继续用于展示及原有读取接口，不能用于编辑或删除。
+
+服务端在修改前重新扫描当前配置的书库，并验证文件身份、大小、时间戳和元数据状态。
+文件状态变化返回 `412`，目标已不存在返回 `404`，缺少 `If-Match` 返回 `428`；此时应刷新书架。
+小说书架请求须保留 `?shelf=novels`。修改接口不接受 `dir` 参数切换操作目录。
+UUID 和版本号用于防止旧页面操作错误目标，不是身份认证凭据。
+
+回归测试：`python -m unittest discover -s tests -v`。
+
+## 七、启动方式
 
 - **图形界面 (推荐)**：直接双击运行 **`D:\图书管理\图书整理工具.exe`**。
 - **命令行快捷启动**：双击运行 **`D:\图书管理\organize.bat`**。
